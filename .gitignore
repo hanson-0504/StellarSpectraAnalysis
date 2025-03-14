@@ -1,0 +1,28 @@
+# Ignore large datasets and temporary files  
+data/*.fits  
+data/*.npy  
+data/*.csv  
+models/*.joblib 
+models/*.sav 
+data/*.joblib
+
+# Ignore Python cache and environment files  
+__pycache__/  
+*.pyc  
+*.pyo  
+*.pyd  
+venv/  
+.env  
+
+# Ignore Jupyter notebook checkpoints  
+.notebooks_checkpoints/  
+
+# Ignore logs and temporary files  
+logs/  
+*.log  
+*.tmp  
+
+# Ignore system-specific files  
+.DS_Store  
+Thumbs.db  
+
