@@ -1,129 +1,104 @@
 import os
+import yaml
 import logging
-import numpy as np
-from scipy import constants
-from astropy import units as u
-from astropy.table import Table
-from astropy.coordinates import SkyCoord
-from sklearn.model_selection import GridSearchCV
+import argparse
 
 
-def doppler_shift(wave_obs, flux, v, wave_grid):
-    """Shifts observed wavelength to rest frame and interpolates flux."""
-    try:
-        z = v / (constants.c / 1000)
-        wave_shift = wave_obs / (1 + z)
+def setup_env(config):
+    """
+    Ensures necessary directories exist and sets up logging based on config.
+    
+    Args:
+        config (dict): Parsed configuration dictionary from YAML.
+    """
+    # Create directories dynamically from the config file
+    directories = config.get("directories", {})
+    for key, directory in directories.items():
+        os.makedirs(directory, exist_ok=True)
+        logging.info(f"Ensured directory exists: {directory}")
 
-        if np.any(np.isnan(wave_shift)) or np.any(np.isnan(flux)):
-            raise ValueError("NaN values detected in wavelength or flux.")
+    # Ensure subdirectories inside output/
+    output_dir = directories.get("output", "output/")
+    os.makedirs(os.path.join(output_dir, "results"), exist_ok=True)
+    os.makedirs(os.path.join(output_dir, "residuals"), exist_ok=True)
+    
+    logging.info("Ensured 'results' and 'residuals' directories exist under output/")
 
-        return np.interp(wave_grid, wave_shift, flux)
+    # Set TensorFlow environment variable (if needed)
+    os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
-    except Exception as e:
-        logging.error(f"Doppler shift failed: {e}", exc_info=True)
-        raise
-
-
-def interpolate_masked_values(spectrum, mask):
-    spectrum = np.copy(spectrum)  # Ensure original data isn't modified
-    mask = mask.astype(bool)# Ensure the mask is boolean
-
-    if np.all(mask):
-        raise ValueError("All values are masked. Cannot interpolate.")
-
-    valid_indices = np.where(~mask)[0]
-    valid_values = spectrum[~mask]
-    masked_indices = np.where(mask)[0]
-
-    interpolated_values = np.interp(masked_indices, valid_indices, valid_values)
-    spectrum[mask] = interpolated_values
-
-    return spectrum
+    # Setup logging
+    setup_logging(config)
 
 
-def combine_tables(table1, table2):
-    """Matches DESI spectra table with Apogee table."""
-    try:
-        if len(table1) == 0 or len(table2) == 0:
-            raise ValueError("One of the input tables is empty.")
-
-        table1_clean = table1[np.isfinite(table1['TARGET_RA']) & np.isfinite(table1['TARGET_DEC'])]
-        table2_clean = table2[np.isfinite(table2['ra']) & np.isfinite(table2['dec'])]
-
-        if len(table1_clean) == 0 or len(table2_clean) == 0:
-            raise ValueError("No valid coordinates found after cleaning tables.")
-
-        coords1 = SkyCoord(ra=table1_clean['TARGET_RA'], dec=table1_clean['TARGET_DEC'], unit=(u.deg, u.deg))
-        coords2 = SkyCoord(ra=table2_clean['ra'], dec=table2_clean['dec'], unit=(u.deg, u.deg))
-
-        idx1, idx2, sep2d, _ = coords1.search_around_sky(coords2, 1 * u.arcsec)
-
-        if len(idx1) == 0:
-            logging.warning("No matches found between tables.")
-
-        unique_idx = np.unique(idx2, return_index=True)[1]
-        idx1, idx2 = idx1[unique_idx], idx2[unique_idx]
-
-        matched_table = Table()
-        matched_table['RA_DESI'] = table1_clean['TARGET_RA'][idx2]
-        matched_table['Dec_DESI'] = table1_clean['TARGET_DEC'][idx2]
-        matched_table['vhelio'] = table2_clean['vhelio_avg'][idx1]
-        matched_table['teff'] = table2_clean['teff'][idx1]
-        matched_table['logg'] = table2_clean['logg'][idx1]
-        matched_table['fe_h'] = table2_clean['fe_h'][idx1]
-
-        for element in ['ce', 'ni', 'co', 'mn', 'cr', 'v', 'tiii', 'ti', 'ca', 'k', 's', 'si', 'al', 'mg', 'na', 'o', 'n', 'ci', 'c']:
-            matched_table[f'{element}_fe'] = table2_clean[f'{element}_fe'][idx1]
-
-        logging.info(f"Matched {len(matched_table)} spectra.")
-        return matched_table
-
-    except Exception as e:
-        logging.error(f"Error in combine_tables(): {e}", exc_info=True)
-        raise
-
-
-def tune_hyperparam(X, y, pipeline, param_grid):
-    """Hyperparameter tuning to retrieve best pipeline for ML model.
-    Tune on subset of samples, about 20% of total so that the tuning is not overfitting
+def setup_logging(config):
+    """
+    Sets up logging based on the configuration file.
 
     Args:
-        X (ndarray): Holds the spectral data formatted for {name} stellar parameter, shape=(n_sample, n_features)
-        y (ndarray): Holds the target data of {name} stellar parameter, shape=(n_sample)
-        pipeline (object): Method for scaling, dimensionality reduction and rf estimation.
-        param_grid (dict): Hyperparameter grid for tuning
+        config (dict): Parsed configuration dictionary from YAML.
+    """
+    log_config = config.get("logging", {})
+
+    log_level = getattr(logging, log_config.get("level", "INFO").upper(), logging.INFO)
+    log_file = log_config.get("log_file", "logs/app.log")
+    log_format = log_config.get("format", "%(asctime)s - %(levelname)s - %(message)s")
+    log_to_console = log_config.get("console", True)
+
+    # Ensure the logs directory exists
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+
+    # Get the root logger
+    logger = logging.getLogger()
+
+    # Prevent adding multiple handlers in case of reconfiguration
+    if not logger.hasHandlers():
+        # Define log handlers
+        file_handler = logging.FileHandler(log_file, mode='a')  # Append mode
+        file_handler.setFormatter(logging.Formatter(log_format))
+        logger.addHandler(file_handler)
+
+        if log_to_console:
+            console_handler = logging.StreamHandler()
+            console_handler.setFormatter(logging.Formatter(log_format))
+            logger.addHandler(console_handler)
+
+        # Set log level
+        logger.setLevel(log_level)
+
+    logging.info("Logging setup complete.")
+
+
+def load_config(config_file):
+    """
+    Loads configuration from a YAML file.
+    
+    Args:
+        config_file (str): Path to the YAML config file.
 
     Returns:
-        Pipline: Best pipeline for parameters for {name} target
-        best parameters: Print out the best parameters for {name} target
+        dict: Configuration dictionary.
     """
-    try:
-        grid_search = GridSearchCV(
-            pipeline,
-            param_grid,
-            scoring='neg_root_mean_squared_error',
-            cv=5
-        )
-        grid_search.fit(X, y)
-
-        return grid_search.best_estimator_
-    except Exception as e:
-        logging.error(f'Error during hyperparameter tuning: {e}')
-        raise
+    with open(config_file, "r") as f:
+        config = yaml.safe_load(f)
+    
+    logging.info(f"Configuration loaded from {config_file}")
+    return config
 
 
-def setup_env():
-    """Ensure necessary directories exist and set up logging."""
-    os.makedirs('data', exist_ok=True)
-    os.makedirs('models', exist_ok=True)
-    os.makedirs('results', exist_ok=True)
-    os.makedirs('residuals', exist_ok=True)
+def parse_arguments():
+    """Parses command-line arguments."""
+    parser = argparse.ArgumentParser(description="Process FITS spectra data")
+    
+    # Define command-line arguments
+    parser.add_argument("--config", type=str, default="config.yaml", help="Path to the config file")
+    parser.add_argument("--fits_dir", type=str, help="Path to FITS files (overrides config)")
+    parser.add_argument("--labels_dir", type=str, help="Path to labels")
 
-    logging.basicConfig(
-        level=logging.DEBUG,  # Logs everything from DEBUG and up
-        format="%(asctime)s - %(levelname)s - %(message)s",
-        handlers=[
-            logging.FileHandler("training.log"),  # Save logs to a file
-            logging.StreamHandler()  # Also print logs to console
-        ]
-    )
+    return parser.parse_args()
+
+def read_text_file(filename):
+    """Read text file"""
+    with open(filename, 'r') as f:
+        lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+    return lines

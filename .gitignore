@@ -1,10 +1,9 @@
 # Ignore large datasets and temporary files  
-data/*.fits  
-data/*.npy  
-data/*.csv  
-models/*.joblib 
-models/*.sav 
-data/*.joblib
+data/
+models/
+results/
+residuals/
+kt_tuner_dir/
 
 # Ignore Python cache and environment files  
 __pycache__/  

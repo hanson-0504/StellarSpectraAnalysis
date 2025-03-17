@@ -9,6 +9,7 @@ from utils import setup_env
 from sklearn.metrics import root_mean_squared_error
 from sklearn.model_selection import cross_val_predict
 
+
 def load_and_predict():
     setup_env()
     start_time = time.time()

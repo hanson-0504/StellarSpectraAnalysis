@@ -1,49 +1,122 @@
+import os
 import glob
-import argparse
+import time
+import logging
 import numpy as np
 from tqdm import tqdm
 from joblib import dump
+from scipy import constants
 from astropy.io import fits
+from astropy import units as u
 from astropy.table import Table, vstack
 from scipy.ndimage import median_filter
-from utils import doppler_shift, interpolate_masked_values, combine_tables
+from astropy.coordinates import SkyCoord
+from utils import parse_arguments, load_config, setup_env, read_text_file
 
 
-# Set up argparse
-parser = argparse.ArgumentParser(description="Process FITS spectra data")
-parser.add_argument('--fits_dir', type=str, default='data/', help='Path to FITS files')
-parser.add_argument('--exclude_labels', type=str, default='apogee_set.fits', help='Pattern to exclude from the file list')
-# You can add more arguments here as needed (e.g., for output directory, processing options, etc.)
-args = parser.parse_args()
+def doppler_shift(wave_obs, flux, v, wave_grid):
+    """Shifts observed wavelength to rest frame and interpolates flux."""
+    try:
+        z = v / (constants.c / 1000)
+        wave_shift = wave_obs / (1 + z)
 
-# Get the list of FITS files excluding the specified pattern
-fitsdata = [
-    f for f in glob.glob(f'{args.fits_dir}/*.fits') 
-    if args.exclude_pattern not in f
-]
+        if np.any(np.isnan(wave_shift)) or np.any(np.isnan(flux)):
+            raise ValueError("NaN values detected in wavelength or flux.")
+
+        return np.interp(wave_grid, wave_shift, flux)
+
+    except Exception as e:
+        logging.error(f"Doppler shift failed: {e}", exc_info=True)
+        raise
+
+
+def interpolate_masked_values(spectrum, mask):
+    spectrum = np.copy(spectrum)  # Ensure original data isn't modified
+    mask = mask.astype(bool)# Ensure the mask is boolean
+
+    if np.all(mask):
+        raise ValueError("All values are masked. Cannot interpolate.")
+
+    valid_indices = np.where(~mask)[0]
+    valid_values = spectrum[~mask]
+    masked_indices = np.where(mask)[0]
+
+    interpolated_values = np.interp(masked_indices, valid_indices, valid_values)
+    spectrum[mask] = interpolated_values
+
+    return spectrum
+
+
+def combine_tables(table1, table2, param_names):
+    """Matches DESI spectra table with Apogee table."""
+    try:
+        if len(table1) == 0 or len(table2) == 0:
+            raise ValueError("One of the input tables is empty.")
+
+        table1_clean = table1[np.isfinite(table1['TARGET_RA']) & np.isfinite(table1['TARGET_DEC'])]
+        table2_clean = table2[np.isfinite(table2['ra']) & np.isfinite(table2['dec'])]
+
+        if len(table1_clean) == 0 or len(table2_clean) == 0:
+            raise ValueError("No valid coordinates found after cleaning tables.")
+
+        coords1 = SkyCoord(ra=table1_clean['TARGET_RA'], dec=table1_clean['TARGET_DEC'], unit=(u.deg, u.deg))
+        coords2 = SkyCoord(ra=table2_clean['ra'], dec=table2_clean['dec'], unit=(u.deg, u.deg))
+
+        idx1, idx2, sep2d, _ = coords1.search_around_sky(coords2, 1 * u.arcsec)
+
+        if len(idx1) == 0:
+            logging.warning("No matches found between tables.")
+
+        unique_idx = np.unique(idx2, return_index=True)[1]
+        idx1, idx2 = idx1[unique_idx], idx2[unique_idx]
+
+        matched_table = Table()
+        matched_table['RA_DESI'] = table1_clean['TARGET_RA'][idx2]
+        matched_table['Dec_DESI'] = table1_clean['TARGET_DEC'][idx2]
+        matched_table['vhelio'] = table2_clean['vhelio_avg'][idx1]
+
+        for param in param_names:
+            matched_table[param] = table2_clean[param][idx1]
+
+        logging.info(f"Matched {len(matched_table)} spectra.")
+        return matched_table
+
+    except Exception as e:
+        logging.error(f"Error in combine_tables(): {e}", exc_info=True)
+        raise
 
 
 def preprocess_spectra():
-    apogee_file = "data/apogee_set.fits" # initiate loading of apogee file
+    start_time = time.time()
+    args = parse_arguments()
+    config = load_config(args.config)
+    setup_env(config)
+
+    spec_dir = args.fits_dir or config['directories'].get('spectral', 'data/')
+    labels_dir = args.labels_dir or config['directories'].get('labels', 'data/')
+
+    fits_files = glob.glob(os.path.join(spec_dir, "*.fits"))
+    apogee_file = os.path.join(labels_dir, 'apogee_set.fits')
+    param_names = read_text_file(os.path.join(labels_dir, 'label_names.txt'))
 
     with fits.open(apogee_file) as hdus:
         f = Table.read(hdus[1])
-    parameters = ['ra', 'dec', 'vhelio_avg', 'teff', 'logg', 'fe_h', 'ce_fe', 'ni_fe', 'co_fe', 'mn_fe', 'cr_fe', 'v_fe', 'tiii_fe', 'ti_fe', 'ca_fe', 'k_fe', 's_fe', 'si_fe', 'al_fe', 'mg_fe', 'na_fe', 'o_fe', 'n_fe', 'ci_fe', 'c_fe']
+    parameters = ['ra', 'dec', 'vhelio_avg'] + param_names
     apogee_table = Table(data=f[parameters])
     del f
-    apogee_table.write("data/apogee_data.csv", format='ascii.csv', overwrite=True)
+    # apogee_table.write("data/apogee_data.csv", format='ascii.csv', overwrite=True)
 
     num_spec = 0
-    for file in fitsdata:
+    for file in fits_files:
         with fits.open(file) as hdu:
             num_spec += hdu['B_FLUX'].shape[0]
-    print(f"Number of spectra = {num_spec}")
+    logging.info(f"Number of spectra = {num_spec}")
 
     # initiate large arrays to contain flux and wave data for all spectra
     big_flux_array = np.zeros((num_spec, 7781)) # Number of stars x length of data arrays
 
     table_list = []
-    for fits_file in tqdm(fitsdata, desc="Processing FITS files"):
+    for fits_file in tqdm(fits_files, desc="Processing FITS files"):
         wave = dict()
         flux = dict()
         mask = dict()
@@ -54,8 +127,8 @@ def preprocess_spectra():
                 wave[camera] = hdus[f'{camera}_WAVELENGTH'].data
                 mask[camera] = hdus[f'{camera}_MASK'].data
                 flux[camera] = hdus[f'{camera}_FLUX'].data
-        matched_tables = combine_tables(spec_data, apogee_table)
-        print(f'\nNumber of spectra = {num_spec}')
+        matched_tables = combine_tables(spec_data, apogee_table, param_names)
+        logging.info(f'\nNumber of spectra = {num_spec}')
         table_list.append(matched_tables)
 
         # Eliminate the last 25 wavelengths from camera B
@@ -111,10 +184,12 @@ def preprocess_spectra():
             # append data arrays
             big_flux_array[ispec] = flux_rest
     matched_tables = vstack(table_list)
-    matched_tables.write("data/labels.csv", format='ascii.csv', overwrite=True)
+    matched_tables.write(os.path.join(labels_dir, 'labels.csv'), format='ascii.csv', overwrite=True)
 
     # Create file to store data
     dump(big_flux_array, "data/flux.joblib")
+    end_time = time.time()
+    logging.info(f"Preprocessing is complete in {(end_time-start_time)/60:.2f}")
 
 if __name__ == "__main__":
     preprocess_spectra()

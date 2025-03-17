@@ -9,8 +9,38 @@ from sklearn.pipeline import Pipeline
 from sklearn.decomposition import IncrementalPCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split
-from utils import setup_env, tune_hyperparam
+from sklearn.model_selection import train_test_split, GridSearchCV
+from utils import *
+
+
+def tune_hyperparam(X, y, pipeline, param_grid):
+    """Hyperparameter tuning to retrieve best pipeline for ML model.
+    Tune on subset of samples, about 20% of total so that the tuning is not overfitting
+
+    Args:
+        X (ndarray): Holds the spectral data formatted for {name} stellar parameter, shape=(n_sample, n_features)
+        y (ndarray): Holds the target data of {name} stellar parameter, shape=(n_sample)
+        pipeline (object): Method for scaling, dimensionality reduction and rf estimation.
+        param_grid (dict): Hyperparameter grid for tuning
+
+    Returns:
+        Pipline: Best pipeline for parameters for {name} target
+        best parameters: Print out the best parameters for {name} target
+    """
+    try:
+        grid_search = GridSearchCV(
+            pipeline,
+            param_grid,
+            scoring='neg_root_mean_squared_error',
+            cv=5
+        )
+        grid_search.fit(X, y)
+
+        return grid_search.best_estimator_
+    except Exception as e:
+        logging.error(f'Error during hyperparameter tuning: {e}')
+        raise
+
 
 # Train Model
 def train_and_save_models():

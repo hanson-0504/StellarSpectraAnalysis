@@ -1,0 +1,22 @@
+# Configuration file for spectral analysis
+directories:
+  spectral: "data/spectral_dir/"   # Directory containing spectral data (FITS files)
+  labels: "data/label_dir/"        # Directory containing labels (chemical abundances, etc.)
+  models: "data/models/"           # Directory for trained machine learning models
+  tuners: "data/kt_tuner_dir/"
+  output: "output/"                # Where to save results
+
+# File naming conventions (optional, improves automation)
+file_patterns:
+  spectral: "*.fits"               # Expected format for spectra files
+  labels: "*.fits"                 # Expected format for label files
+  model: 
+  - "*.joblib"
+  - "*.keras"
+
+# Logging configuration
+logging:
+  level: DEBUG
+  log_file: "logs/app.log"
+  format: "%(asctime)s - %(levelname)s - %(message)s"
+  console: True
