@@ -14,59 +14,38 @@ def setup_env(config):
     # Create directories dynamically from the config file
     directories = config.get("directories", {})
     for key, directory in directories.items():
-        os.makedirs(directory, exist_ok=True)
-        logging.info(f"Ensured directory exists: {directory}")
+        if directory:
+            os.makedirs(directory, exist_ok=True)
 
     # Ensure subdirectories inside output/
     output_dir = directories.get("output", "output/")
     os.makedirs(os.path.join(output_dir, "results"), exist_ok=True)
     os.makedirs(os.path.join(output_dir, "residuals"), exist_ok=True)
-    
-    logging.info("Ensured 'results' and 'residuals' directories exist under output/")
 
     # Set TensorFlow environment variable (if needed)
     os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
-    # Setup logging
-    setup_logging(config)
+    # Configure logging
+    log_dir = directories.get("logs", "logs/")
+    os.makedirs(log_dir, exist_ok=True)
 
-
-def setup_logging(config):
-    """
-    Sets up logging based on the configuration file.
-
-    Args:
-        config (dict): Parsed configuration dictionary from YAML.
-    """
-    log_config = config.get("logging", {})
-
-    log_level = getattr(logging, log_config.get("level", "INFO").upper(), logging.INFO)
-    log_file = log_config.get("log_file", "logs/app.log")
-    log_format = log_config.get("format", "%(asctime)s - %(levelname)s - %(message)s")
-    log_to_console = log_config.get("console", True)
-
-    # Ensure the logs directory exists
-    os.makedirs(os.path.dirname(log_file), exist_ok=True)
-
-    # Get the root logger
+    # Remove existing handlers
     logger = logging.getLogger()
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
 
-    # Prevent adding multiple handlers in case of reconfiguration
-    if not logger.hasHandlers():
-        # Define log handlers
-        file_handler = logging.FileHandler(log_file, mode='a')  # Append mode
-        file_handler.setFormatter(logging.Formatter(log_format))
-        logger.addHandler(file_handler)
+    # Set up new logging
+    logger.setLevel(logging.DEBUG)
 
-        if log_to_console:
-            console_handler = logging.StreamHandler()
-            console_handler.setFormatter(logging.Formatter(log_format))
-            logger.addHandler(console_handler)
+    file_handler = logging.FileHandler(os.path.join(log_dir, "app.log"))
+    console_handler = logging.StreamHandler()
 
-        # Set log level
-        logger.setLevel(log_level)
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
 
-    logging.info("Logging setup complete.")
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
 
 
 def load_config(config_file):

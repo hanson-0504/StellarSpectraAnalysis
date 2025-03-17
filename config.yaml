@@ -5,6 +5,7 @@ directories:
   models: "data/models/"           # Directory for trained machine learning models
   tuners: "data/kt_tuner_dir/"
   output: "output/"                # Where to save results
+  logs: "logs/"
 
 # File naming conventions (optional, improves automation)
 file_patterns:
@@ -13,10 +14,3 @@ file_patterns:
   model: 
   - "*.joblib"
   - "*.keras"
-
-# Logging configuration
-logging:
-  level: DEBUG
-  log_file: "logs/app.log"
-  format: "%(asctime)s - %(levelname)s - %(message)s"
-  console: True
