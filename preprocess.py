@@ -47,36 +47,62 @@ def interpolate_masked_values(spectrum, mask):
     return spectrum
 
 
-def combine_tables(table1, table2, param_names):
+def combine_tables(table1, table2, parameters):
     """Matches DESI spectra table with Apogee table."""
     try:
         if len(table1) == 0 or len(table2) == 0:
             raise ValueError("One of the input tables is empty.")
 
-        table1_clean = table1[np.isfinite(table1['TARGET_RA']) & np.isfinite(table1['TARGET_DEC'])]
-        table2_clean = table2[np.isfinite(table2['ra']) & np.isfinite(table2['dec'])]
+        # Create case-insensitive column mappings for both tables
+        table1_cols = {col.lower(): col for col in table1.colnames}
+        table2_cols = {col.lower(): col for col in table2.colnames}
+
+        # Standardized column names
+        target_ra_col = table1_cols.get('target_ra', None)
+        target_dec_col = table1_cols.get('target_dec', None)
+        ra_col = table2_cols.get('ra', None)
+        dec_col = table2_cols.get('dec', None)
+        vhelio_col = table2_cols.get('vhelio_avg', None)
+
+        # Check if necessary columns exist
+        missing_cols = [c for c in ['target_ra', 'target_dec', 'ra', 'dec', 'vhelio_avg'] if c not in table1_cols and c not in table2_cols]
+        if missing_cols:
+            raise KeyError(f"Missing required columns: {missing_cols}. Available columns in table1: {table1.colnames}, table2: {table2.colnames}")
+
+        # Clean data: ensure finite values
+        table1_clean = table1[np.isfinite(table1[target_ra_col]) & np.isfinite(table1[target_dec_col])]
+        table2_clean = table2[np.isfinite(table2[ra_col]) & np.isfinite(table2[dec_col])]
 
         if len(table1_clean) == 0 or len(table2_clean) == 0:
             raise ValueError("No valid coordinates found after cleaning tables.")
 
-        coords1 = SkyCoord(ra=table1_clean['TARGET_RA'], dec=table1_clean['TARGET_DEC'], unit=(u.deg, u.deg))
-        coords2 = SkyCoord(ra=table2_clean['ra'], dec=table2_clean['dec'], unit=(u.deg, u.deg))
+        # Convert to SkyCoord objects
+        coords1 = SkyCoord(ra=table1_clean[target_ra_col], dec=table1_clean[target_dec_col], unit=(u.deg, u.deg))
+        coords2 = SkyCoord(ra=table2_clean[ra_col], dec=table2_clean[dec_col], unit=(u.deg, u.deg))
 
-        idx1, idx2, sep2d, _ = coords1.search_around_sky(coords2, 1 * u.arcsec)
+        # Cross-match tables
+        idx1, idx2, sep2d, _ = coords1.search_around_sky(coords2, 3 * u.arcsec)
 
         if len(idx1) == 0:
             logging.warning("No matches found between tables.")
 
+        # Ensure unique matches
         unique_idx = np.unique(idx2, return_index=True)[1]
         idx1, idx2 = idx1[unique_idx], idx2[unique_idx]
 
+        # Create matched table
         matched_table = Table()
-        matched_table['RA_DESI'] = table1_clean['TARGET_RA'][idx2]
-        matched_table['Dec_DESI'] = table1_clean['TARGET_DEC'][idx2]
-        matched_table['vhelio'] = table2_clean['vhelio_avg'][idx1]
+        matched_table['RA'] = table1_clean[target_ra_col][idx2]
+        matched_table['Dec'] = table1_clean[target_dec_col][idx2]
+        matched_table['vhelio'] = table2_clean[vhelio_col][idx1]
 
-        for param in param_names:
-            matched_table[param] = table2_clean[param][idx1]
+        # Generalized parameter selection
+        for param in parameters:
+            param_col = table2_cols.get(param.lower(), None)
+            if param_col:
+                matched_table[param] = table2_clean[param_col][idx1]
+            else:
+                logging.warning(f"Parameter {param} not found in table2.")
 
         logging.info(f"Matched {len(matched_table)} spectra.")
         return matched_table
@@ -101,8 +127,13 @@ def preprocess_spectra():
 
     with fits.open(label_files[0], memap=True) as hdus:
         f = Table.read(hdus[1])
+    available_columns = {col.lower(): col for col in f.colnames}
+    # Standardize parameter names (case-insensitive)
     parameters = ['ra', 'dec', 'vhelio_avg'] + param_names
-    apogee_table = Table(data=f[parameters])
+    normalized_parameters = [available_columns.get(param.lower(), param) for param in parameters]
+
+    # Extract table data
+    apogee_table = Table(data=f[normalized_parameters])
     del f
     # apogee_table.write("data/apogee_data.csv", format='ascii.csv', overwrite=True)
 
@@ -128,6 +159,9 @@ def preprocess_spectra():
                 mask[camera] = hdus[f'{camera}_MASK'].data
                 flux[camera] = hdus[f'{camera}_FLUX'].data
         matched_tables = combine_tables(spec_data, apogee_table, param_names)
+        if len(matched_tables) == 0:
+            logging.error("No spectra matched. Check coordinate ranges and units.")
+            return  # Exit gracefully instead of crashing
         table_list.append(matched_tables)
 
         # Eliminate the last 25 wavelengths from camera B

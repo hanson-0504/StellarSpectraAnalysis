@@ -20,7 +20,7 @@ venv/
 logs/  
 *.log  
 *.tmp  
-
+*.out
 # Ignore system-specific files  
 .DS_Store  
 Thumbs.db  
