@@ -35,7 +35,7 @@ def setup_env(config):
         logger.removeHandler(handler)
 
     # Set up new logging
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
 
     file_handler = logging.FileHandler(os.path.join(log_dir, "app.log"))
     console_handler = logging.StreamHandler()
@@ -73,8 +73,10 @@ def parse_arguments():
     parser.add_argument("--config", type=str, default="config.yaml", help="Path to the config file")
     parser.add_argument("--fits_dir", type=str, help="Path to FITS files (overrides config)")
     parser.add_argument("--labels_dir", type=str, help="Path to labels")
+    parser.add_argument("--output_dir", type=str, help="Path to outputs")
 
     return parser.parse_args()
+
 
 def read_text_file(filename):
     """Read text file"""

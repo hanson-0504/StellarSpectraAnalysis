@@ -92,14 +92,14 @@ def preprocess_spectra():
     config = load_config(args.config)
     setup_env(config)
 
-    spec_dir = args.fits_dir or config['directories'].get('spectral', 'data/')
-    labels_dir = args.labels_dir or config['directories'].get('labels', 'data/')
+    spec_dir = args.fits_dir or config['directories'].get('spectral', 'data/spectral_dir')
+    labels_dir = args.labels_dir or config['directories'].get('labels', 'data/label_dir')
 
     fits_files = glob.glob(os.path.join(spec_dir, "*.fits"))
-    apogee_file = os.path.join(labels_dir, 'apogee_set.fits')
+    label_files = glob.glob(os.path.join(labels_dir, '*.fits'))
     param_names = read_text_file(os.path.join(labels_dir, 'label_names.txt'))
 
-    with fits.open(apogee_file) as hdus:
+    with fits.open(label_files[0], memap=True) as hdus:
         f = Table.read(hdus[1])
     parameters = ['ra', 'dec', 'vhelio_avg'] + param_names
     apogee_table = Table(data=f[parameters])
@@ -128,7 +128,6 @@ def preprocess_spectra():
                 mask[camera] = hdus[f'{camera}_MASK'].data
                 flux[camera] = hdus[f'{camera}_FLUX'].data
         matched_tables = combine_tables(spec_data, apogee_table, param_names)
-        logging.info(f'\nNumber of spectra = {num_spec}')
         table_list.append(matched_tables)
 
         # Eliminate the last 25 wavelengths from camera B
@@ -187,7 +186,7 @@ def preprocess_spectra():
     matched_tables.write(os.path.join(labels_dir, 'labels.csv'), format='ascii.csv', overwrite=True)
 
     # Create file to store data
-    dump(big_flux_array, "data/flux.joblib")
+    dump(big_flux_array, os.path.join(spec_dir, "flux.joblib"))
     end_time = time.time()
     logging.info(f"Preprocessing is complete in {(end_time-start_time)/60:.2f}")
 
