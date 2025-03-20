@@ -14,7 +14,8 @@ venv/
 .env  
 
 # Ignore Jupyter notebook checkpoints  
-.notebooks_checkpoints/  
+.notebooks_checkpoints/
+/.ipynb_checkpoints
 
 # Ignore logs and temporary files  
 logs/  

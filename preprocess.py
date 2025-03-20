@@ -17,11 +17,16 @@ from utils import parse_arguments, load_config, setup_env, read_text_file
 def doppler_shift(wave_obs, flux, v, wave_grid):
     """Shifts observed wavelength to rest frame and interpolates flux."""
     try:
-        z = v / (constants.c / 1000)
-        wave_shift = wave_obs / (1 + z)
+        z = v / (constants.c / 1000)  # Convert km/s to redshift
+        wave_shift = wave_obs / (1 + z)  # Shift to rest frame
 
-        if np.any(np.isnan(wave_shift)) or np.any(np.isnan(flux)):
-            raise ValueError("NaN values detected in wavelength or flux.")
+        # Debugging logs
+        if wave_shift.size == 0:
+            raise ValueError("wave_shift is empty before interpolation.")
+        if flux.size == 0:
+            raise ValueError("flux is empty before interpolation.")
+        if wave_grid.size == 0:
+            raise ValueError("wave_grid is empty.")
 
         return np.interp(wave_grid, wave_shift, flux)
 
@@ -65,7 +70,8 @@ def combine_tables(table1, table2, parameters):
         vhelio_col = table2_cols.get('vhelio_avg', None)
 
         # Check if necessary columns exist
-        missing_cols = [c for c in ['target_ra', 'target_dec', 'ra', 'dec', 'vhelio_avg'] if c not in table1_cols and c not in table2_cols]
+        required_cols = ['target_ra', 'target_dec', 'ra', 'dec', 'vhelio_avg']
+        missing_cols = [c for c in required_cols if c not in table1_cols and c not in table2_cols]
         if missing_cols:
             raise KeyError(f"Missing required columns: {missing_cols}. Available columns in table1: {table1.colnames}, table2: {table2.colnames}")
 
@@ -85,6 +91,7 @@ def combine_tables(table1, table2, parameters):
 
         if len(idx1) == 0:
             logging.warning("No matches found between tables.")
+            return Table(), np.array([])
 
         # Ensure unique matches
         unique_idx = np.unique(idx2, return_index=True)[1]
@@ -105,11 +112,11 @@ def combine_tables(table1, table2, parameters):
                 logging.warning(f"Parameter {param} not found in table2.")
 
         logging.info(f"Matched {len(matched_table)} spectra.")
-        return matched_table
+        return matched_table, idx2
 
     except Exception as e:
         logging.error(f"Error in combine_tables(): {e}", exc_info=True)
-        raise
+        return Table(), np.array([])
 
 
 def preprocess_spectra():
@@ -121,7 +128,7 @@ def preprocess_spectra():
     spec_dir = args.fits_dir or config['directories'].get('spectral', 'data/spectral_dir')
     labels_dir = args.labels_dir or config['directories'].get('labels', 'data/label_dir')
 
-    fits_files = glob.glob(os.path.join(spec_dir, "*.fits"))
+    fits_files = glob.glob(os.path.join(spec_dir, "*-10402.fits"))
     label_files = glob.glob(os.path.join(labels_dir, '*.fits'))
     param_names = read_text_file(os.path.join(labels_dir, 'label_names.txt'))
 
@@ -143,10 +150,9 @@ def preprocess_spectra():
             num_spec += hdu['B_FLUX'].shape[0]
     logging.info(f"Number of spectra = {num_spec}")
 
-    # initiate large arrays to contain flux and wave data for all spectra
-    big_flux_array = np.zeros((num_spec, 7781)) # Number of stars x length of data arrays
-
+    flux_list = []
     table_list = []
+
     for fits_file in tqdm(fits_files, desc="Processing FITS files"):
         wave = dict()
         flux = dict()
@@ -158,7 +164,8 @@ def preprocess_spectra():
                 wave[camera] = hdus[f'{camera}_WAVELENGTH'].data
                 mask[camera] = hdus[f'{camera}_MASK'].data
                 flux[camera] = hdus[f'{camera}_FLUX'].data
-        matched_tables = combine_tables(spec_data, apogee_table, param_names)
+        matched_tables, matched_indices = combine_tables(spec_data, apogee_table, param_names)
+        num_spec = len(matched_tables)
         if len(matched_tables) == 0:
             logging.error("No spectra matched. Check coordinate ranges and units.")
             return  # Exit gracefully instead of crashing
@@ -166,8 +173,8 @@ def preprocess_spectra():
 
         # Eliminate the last 25 wavelengths from camera B
         wave1 = np.array(wave['B'])
-        mask1 = np.array(mask['B'])
-        flux1 = np.array(flux['B'])
+        mask1 = np.array(mask['B'])[matched_indices]
+        flux1 = np.array(flux['B'])[matched_indices]
 
         wave1 = wave1[:-25]
         mask1 = mask1[:, :-25]
@@ -179,20 +186,20 @@ def preprocess_spectra():
         wave2 = wave2[26:]
         wave2 = wave2[:-63]
 
-        mask2 = np.array(mask['R'])
+        mask2 = np.array(mask['R'])[matched_indices]
         mask2 = mask2[:, 26:]
         mask2 = mask2[:, :-63]
 
-        flux2 = np.array(flux['R'])
+        flux2 = np.array(flux['R'])[matched_indices]
         flux2 = flux2[:, 26:]
         flux2 = flux2[:, :-63]
 
         # Eliminate the first 63 wavelengths from camera Z
         wave3 = np.array(wave['Z'])
         wave3 = wave3[63:]
-        mask3 = np.array(mask['Z'])
+        mask3 = np.array(mask['Z'])[matched_indices]
         mask3 = mask3[:, 63:]
-        flux3 = np.array(flux['Z'])
+        flux3 = np.array(flux['Z'])[matched_indices]
         flux3 = flux3[:, 63:]
 
         wave = np.concatenate([wave1, wave2, wave3])
@@ -215,12 +222,22 @@ def preprocess_spectra():
 
             flux_rest = doppler_shift(wave, normal_flux, spec_v, wave)
             # append data arrays
-            big_flux_array[ispec] = flux_rest
+            flux_list.append(flux_rest)
+
     matched_tables = vstack(table_list)
     matched_tables.write(os.path.join(labels_dir, 'labels.csv'), format='ascii.csv', overwrite=True)
 
-    # Create file to store data
-    dump(big_flux_array, os.path.join(spec_dir, "flux.joblib"))
+    # Convert the collected flux arrays into a NumPy array
+    if flux_list:
+        big_flux_array = np.vstack(flux_list)
+        dump(big_flux_array, os.path.join(spec_dir, "flux.joblib"))
+        logging.info(f"Saved {len(flux_list)} spectra.")
+
+    # Save the matched tables
+    if table_list:
+        matched_tables = vstack(table_list)
+        matched_tables.write(os.path.join(labels_dir, 'labels.csv'), format='ascii.csv', overwrite=True)
+
     end_time = time.time()
     logging.info(f"Preprocessing is complete in {(end_time-start_time)/60:.2f}")
 
