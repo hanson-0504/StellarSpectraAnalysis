@@ -128,7 +128,7 @@ def preprocess_spectra():
     spec_dir = args.fits_dir or config['directories'].get('spectral', 'data/spectral_dir')
     labels_dir = args.labels_dir or config['directories'].get('labels', 'data/label_dir')
 
-    fits_files = glob.glob(os.path.join(spec_dir, "*-10402.fits"))
+    fits_files = glob.glob(os.path.join(spec_dir, "*.fits"))
     label_files = glob.glob(os.path.join(labels_dir, '*.fits'))
     param_names = read_text_file(os.path.join(labels_dir, 'label_names.txt'))
 
