@@ -51,6 +51,24 @@ This project is designed to analyse stellar spectra and infer physical parameter
 
 ## Usage
 
+### Get Data
+
+To train the machine learning models, you need stellar parameters and abundances. This project used the APOGEE data.
+
+#### Download APOGEE AllStar Catalog
+
+Navigate to labels directory:
+
+    cd data/label_dir/
+
+Download the master APOGEE DR17 label file:
+
+    wget https://data.sdss.org/sas/dr17/apogee/spectro/aspcap/dr17/synspec_rev1/allStar-dr17-synspec_rev1.fits
+
+#### Optional: Filter Catalog
+
+Filter stars or specific elements using Astropy or pandas, depending on science focus
+
 ### 1. Preprocess Spectral Dataset
 
 Before training models, the data needs preprocessing. This step reads FITS files, extracts the flux values, applies Doppler corrections, and normalises the flux.
