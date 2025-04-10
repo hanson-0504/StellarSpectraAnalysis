@@ -1,13 +1,13 @@
 import tensorflow as tf
 import keras_tuner as kt
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout
+from tf.keras.models import Sequential
+from tf.keras.layers import Dense, Dropout
 from sklearn.metrics import root_mean_squared_error
 from sklearn.model_selection import train_test_split
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from tf.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 
 
-def build_nn_model(hp, input_shape):
+def build_nn_model(hp, input_shape, use_physics_loss=False):
     """Build and compile a keras model with hyperparameters"""
     model = Sequential()
     model.add(tf.keras.Input(shape=(input_shape,)))
@@ -32,7 +32,10 @@ def build_nn_model(hp, input_shape):
     optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
 
     # Compile the model
-    model.compile(optimizer=optimizer, loss='mean_squared_error')
+    if use_physics_loss:
+        model.compile(optimizer=optimizer, loss=make_combined_loss(hp))
+    else:
+        model.compile(optimizer=optimizer, loss='mean_squared_error')
     
     return model
 
@@ -43,7 +46,7 @@ def train_neural_network(X, y, param_name):
     
     # Define Keras Tuner with RandomSearch
     tuner = kt.RandomSearch(
-        lambda hp: build_nn_model(hp, input_shape=X_train.shape[1]),
+        lambda hp: build_nn_model(hp, input_shape=X_train.shape[1], use_physics_loss=True),
         objective='val_loss',
         max_trials=10,
         executions_per_trial=1,
@@ -77,3 +80,29 @@ def train_neural_network(X, y, param_name):
 def predict_with_nn(model, X):
     """Predict using the trained neural network model."""
     return model.predict(X)
+
+def physics_loss_fn(y_pred, min_val=-2.0, max_val=2.0):
+    """Penalizes predictions that fall outside an expected abundance range."""
+    # Penalize values outside the physical bounds
+    lower_violation = tf.nn.relu(min_val - y_pred)  # y_pred < min_val
+    upper_violation = tf.nn.relu(y_pred - max_val)  # y_pred > max_val
+
+    # Sum of violations (MSE style)
+    loss = tf.reduce_mean(tf.square(lower_violation) + tf.square(upper_violation))
+    return loss
+
+def make_combined_loss(hp):
+    """Returns a loss function with a tunable physics loss weight"""
+    weight = hp.Float(
+        'physics_loss_weight', min_value=0.01, max_value=1.0, sampling='LOG'
+    )
+
+    def loss(y_true, y_pred):
+        """Combines data loss and physical loss"""
+        data_loss = tf.reduce_mean(tf.square(y_true - y_pred))
+        lower_violation = tf.nn.relu(-2.0 - y_pred)
+        upper_violation = tf.nn.relu(y_pred - 2.0)
+        phy_loss = tf.reduce_mean(tf.square(lower_violation) + tf.square(upper_violation))
+        return data_loss + weight * phy_loss
+
+    return loss
