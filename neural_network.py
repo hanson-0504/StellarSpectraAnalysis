@@ -31,11 +31,8 @@ def build_nn_model(hp, input_shape, use_physics_loss=False):
     lr = hp.Float('learning_rate', min_value=1e-4, max_value=1e-2, sampling='LOG')
     optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
 
-    # Compile the model
-    if use_physics_loss:
-        model.compile(optimizer=optimizer, loss=make_combined_loss(hp))
-    else:
-        model.compile(optimizer=optimizer, loss='mean_squared_error')
+    # Compile the model with the loss function
+    model.compile(optimizer=optimizer, loss=loss_function(hp, use_physics_loss=use_physics_loss))
     
     return model
 
@@ -67,42 +64,58 @@ def train_neural_network(X, y, param_name):
         verbose=2
     )
 
-    # Retrieve best model
+    # Retrieve the best model
     best_model = tuner.get_best_models(num_models=1)[0]
+
+    # Retrieve the best hyperparameters
+    best_hps = tuner.get_best_hyperparameters(num_trials=1)[0]
 
     # Evaluate on the validation set
     val_predictions = best_model.predict(X_val)
     val_rmse = root_mean_squared_error(y_val, val_predictions)
-    print(f"Validation RMSE: {val_rmse:.4f}")
 
-    return best_model, tuner
+    # Return the best model and its hyperparameters
+    return best_model, best_hps.values, val_rmse
 
 def predict_with_nn(model, X):
     """Predict using the trained neural network model."""
     return model.predict(X)
 
-def physics_loss_fn(y_pred, min_val=-2.0, max_val=2.0):
-    """Penalizes predictions that fall outside an expected abundance range."""
-    # Penalize values outside the physical bounds
-    lower_violation = tf.nn.relu(min_val - y_pred)  # y_pred < min_val
-    upper_violation = tf.nn.relu(y_pred - max_val)  # y_pred > max_val
+def compute_physics_loss(y_pred, min_val=-2.0, max_val=2.0):
+    """Calculates the physics loss for predictions outside the specified range."""
+    lower_violation = tf.nn.relu(min_val - y_pred)  # Penalize predictions below min_val
+    upper_violation = tf.nn.relu(y_pred - max_val)  # Penalize predictions above max_val
+    physics_loss = tf.reduce_mean(tf.square(lower_violation) + tf.square(upper_violation))
+    return physics_loss
 
-    # Sum of violations (MSE style)
-    loss = tf.reduce_mean(tf.square(lower_violation) + tf.square(upper_violation))
-    return loss
+def loss_function(hp=None, min_val=-2.0, max_val=2.0, use_physics_loss=False):
+    """
+    Creates a loss function that optionally combines data loss and physics loss.
+    
+    Args:
+        hp: Hyperparameter object (optional, for tuning physics loss weight).
+        min_val: Minimum valid value for predictions.
+        max_val: Maximum valid value for predictions.
+        use_physics_loss: Whether to include physics loss in the combined loss.
 
-def make_combined_loss(hp):
-    """Returns a loss function with a tunable physics loss weight"""
-    weight = hp.Float(
-        'physics_loss_weight', min_value=0.01, max_value=1.0, sampling='LOG'
-    )
+    Returns:
+        A loss function to be used in model compilation.
+    """
+    # Set the physics loss weight (tunable if hp is provided)
+    physics_loss_weight = hp.Float('physics_loss_weight', min_value=0.01, max_value=1.0, sampling='LOG') if hp else 1.0
 
     def loss(y_true, y_pred):
-        """Combines data loss and physical loss"""
+        """Combined loss function."""
+        # Data loss (mean squared error)
         data_loss = tf.reduce_mean(tf.square(y_true - y_pred))
-        lower_violation = tf.nn.relu(-2.0 - y_pred)
-        upper_violation = tf.nn.relu(y_pred - 2.0)
-        phy_loss = tf.reduce_mean(tf.square(lower_violation) + tf.square(upper_violation))
-        return data_loss + weight * phy_loss
+        
+        if use_physics_loss:
+            # Physics loss
+            physics_loss = compute_physics_loss(y_pred, min_val, max_val)
+            # Combine data loss and physics loss
+            return data_loss + physics_loss_weight * physics_loss
+        else:
+            # Return only data loss if physics loss is not used
+            return data_loss
 
     return loss

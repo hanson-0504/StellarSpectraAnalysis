@@ -1,4 +1,5 @@
 import gc
+import os
 import time
 import logging
 import numpy as np
@@ -6,27 +7,32 @@ import pandas as pd
 from tqdm import tqdm
 from joblib import load
 import tensorflow as tf
-from utils import setup_env
+from tf.keras.models import load_model
 from neural_network import predict_with_nn
-from tensorflow.keras.models import load_model
+from utils import setup_env, parse_arguments, load_config, read_text_file
 
 
 def load_and_predict():
-    setup_env()
     start_time = time.time()
+    args = parse_arguments()
+    config = load_config(args.config)
+    setup_env(config)
 
-    flux = load("data/flux.joblib")
-    labels = pd.read_csv("data/labels.csv")
+    # Load all the data
+    spec_dir = args.fits_dir or config['directories'].get('spectral', 'data/spectral_dir')
+    flux = load(os.path.join(spec_dir, "flux.joblib"))
+    labels_dir = args.labels_dir or config['directories'].get('labels', 'data/label_dir/')
+    model_dir = config['directories'].get('models', 'data/model_dir/')
+    labels = pd.read_csv(os.path.join(labels_dir, "labels.csv"))
+    param_names = read_text_file(os.path.join(labels_dir, 'label_names.txt'))
     feh = labels['fe_h'].to_numpy()
-    param_names = ['teff']#, 'logg', 'fe_h', 'ce_fe', 'ni_fe', 'co_fe', 'mn_fe', 'cr_fe', 'v_fe', 'tiii_fe', 'ti_fe', 'ca_fe', 'k_fe', 's_fe', 'si_fe', 'al_fe', 'mg_fe', 'na_fe', 'o_fe', 'n_fe', 'ci_fe', 'c_fe']
-
     errors = []
 
     for param in tqdm(param_names, desc='Predicting'):
         try:
             param_start = time.time()
             # Load model
-            model = load_model(f"models/{param}_model.keras")
+            model = load_model(os.path.join(model_dir, f"{param}_model.keras"))         
             y = labels[param].to_numpy()
             X = flux
             # Make Mask
