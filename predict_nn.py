@@ -23,6 +23,7 @@ def load_and_predict():
     flux = load(os.path.join(spec_dir, "flux.joblib"))
     labels_dir = args.labels_dir or config['directories'].get('labels', 'data/label_dir/')
     model_dir = config['directories'].get('models', 'data/model_dir/')
+    output_dir = config['directories'].get('output', 'output/')
     labels = pd.read_csv(os.path.join(labels_dir, "labels.csv"))
     param_names = read_text_file(os.path.join(labels_dir, 'label_names.txt'))
     feh = labels['fe_h'].to_numpy()
@@ -32,7 +33,11 @@ def load_and_predict():
         try:
             param_start = time.time()
             # Load model
-            model = load_model(os.path.join(model_dir, f"{param}_model.keras"))         
+            model_path = os.path.join(model_dir, f"{param}_model.keras")
+            if not os.path.exists(model_path):
+                logging.warning(f"Model file for {param} not found. Skipping...")
+                continue
+            model = load_model(model_path)
             y = labels[param].to_numpy()
             X = flux
             # Make Mask
@@ -46,18 +51,31 @@ def load_and_predict():
             logging.info(f'Prediction array shape = {predictions.shape}')
             residuals = y_masked - predictions
             rmse = np.sqrt(np.mean(residuals**2))
+            logging.info(f'RMSE for {param}: {rmse}')
             errors.append(rmse)
-            # Save Predictions
-            pd.DataFrame({
-                param:predictions,
-                '[Fe/H]':feh_masked
-            }).to_csv(f"results/{param}_predictions.csv", index=False)
-            # Save Residuals
-            pd.DataFrame({
-                '[Fe/H]':feh_masked,
-                'Residuals':residuals
-            }).to_csv(f"residuals/{param}.csv", index=False)
-
+            # Save Predictions and Residuals
+            if param not in ['teff', 'logg', 'feh']:
+                with open(os.path.join(output_dir, f"results/{param}_predictions_nn.csv"), 'w') as f:
+                    pd.DataFrame({
+                        param: predictions,
+                        '[Fe/H]': feh_masked
+                    }).to_csv(f, index=False)
+                with open(os.path.join(output_dir, f"residuals/{param}_nn.csv"), 'w') as f:
+                    pd.DataFrame({
+                        '[Fe/H]':feh_masked,
+                        'Residuals':residuals
+                    }).to_csv(f, index=False)
+            else:
+                with open(os.path.join(output_dir, f"results/{param}_predictions_nn.csv"), 'w') as f:
+                    pd.DataFrame({
+                        'Prediction': predictions,
+                        'Actual': y_masked
+                    }).to_csv(f, index=False)
+                with open(os.path.join(output_dir, f"residuals/{param}_nn.csv"), 'w') as f:
+                    pd.DataFrame({
+                        'Actual': y_masked,
+                        'Residuals': residuals
+                    }).to_csv(f, index=False)    
             logging.info(f'Predictions and residuals for {param} saved successfully!')
             param_end = time.time()
             logging.info(f"{param} processed in {(param_end-param_start)/60:.2f}")
@@ -68,11 +86,11 @@ def load_and_predict():
         except Exception as e:
             logging.error(f'Error processing {param}: {e}')
             continue
-
-    pd.DataFrame({
-        'Parameter':param_names,
-        'RMSE':errors
-    }).to_csv("results/predictions_errors.csv", index=False)
+    with open(os.path.join(output_dir, 'results/nn_rmse.csv'), 'w') as f:
+        pd.DataFrame({
+            'Parameter': param_names,
+            'RMSE': errors
+        }).to_csv(f, index=False)
 
     end_time = time.time()
     print(f"Predictions completed in {(end_time - start_time)/60:.2f}")
