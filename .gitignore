@@ -12,6 +12,8 @@ __pycache__/
 *.pyd  
 venv/  
 .env  
+.pytest_cache/
+.vscode/
 
 # Ignore Jupyter notebook checkpoints  
 .notebooks_checkpoints/

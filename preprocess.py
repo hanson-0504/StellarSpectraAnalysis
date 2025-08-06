@@ -99,8 +99,8 @@ def combine_tables(table1, table2, parameters):
 
         # Create matched table
         matched_table = Table()
-        matched_table['RA'] = table1_clean[target_ra_col][idx2]
-        matched_table['Dec'] = table1_clean[target_dec_col][idx2]
+        matched_table['ra'] = table1_clean[target_ra_col][idx2]
+        matched_table['dec'] = table1_clean[target_dec_col][idx2]
         matched_table['vhelio'] = table2_clean[vhelio_col][idx1]
 
         # Generalized parameter selection
@@ -122,13 +122,16 @@ def combine_tables(table1, table2, parameters):
 def preprocess_spectra():
     start_time = time.time()
     args = parse_arguments()
+    setup_env(args.config)
     config = load_config(args.config)
-    setup_env(config)
 
     spec_dir = args.fits_dir or config['directories'].get('spectral', 'data/spectral_dir')
     labels_dir = args.labels_dir or config['directories'].get('labels', 'data/label_dir')
 
     fits_files = glob.glob(os.path.join(spec_dir, "*.fits"))
+    if not fits_files:
+        logging.error("No Fits files found!")
+        return
     label_files = glob.glob(os.path.join(labels_dir, '*.fits'))
     param_names = read_text_file(os.path.join(labels_dir, 'label_names.txt'))
 
@@ -150,8 +153,11 @@ def preprocess_spectra():
             num_spec += hdu['B_FLUX'].shape[0]
     logging.info(f"Number of spectra = {num_spec}")
 
+    max_spec = args.max_spec  # <-- Add this line
+
     flux_list = []
     table_list = []
+    total_processed = 0  # <-- Add this line
 
     for fits_file in tqdm(fits_files, desc="Processing FITS files"):
         wave = dict()
@@ -170,6 +176,9 @@ def preprocess_spectra():
             logging.error("No spectra matched. Check coordinate ranges and units.")
             return  # Exit gracefully instead of crashing
         table_list.append(matched_tables)
+        
+        logging.info(f"Number of unmodified pixels: {len(wave['B'])} in camera B, {len(wave['R'])} in camera R, {len(wave['Z'])} in camera Z")
+        logging.info(f"Total: {len(wave['B']) + len(wave['R']) + len(wave['Z'])}")
 
         # Eliminate the last 25 wavelengths from camera B
         wave1 = np.array(wave['B'])
@@ -203,8 +212,13 @@ def preprocess_spectra():
         flux3 = flux3[:, 63:]
 
         wave = np.concatenate([wave1, wave2, wave3])
+        
+        logging.info(f"Number of modified spectra: {wave.shape}")
 
         for ispec in range(num_spec):
+            if max_spec is not None and total_processed >= max_spec:
+                break  # Stop processing more spectra
+
             spec_v = matched_tables['vhelio'][ispec] # in km/s
 
             flux = np.concatenate([flux1[ispec], flux2[ispec], flux3[ispec]])
@@ -218,28 +232,37 @@ def preprocess_spectra():
             moving_median = median_filter(flux, size=window_size)
             moving_median[moving_median == 0] = 1e-10
             normal_flux = flux / moving_median
-            normal_flux = normal_flux
+            #normal_flux = normal_flux
 
             flux_rest = doppler_shift(wave, normal_flux, spec_v, wave)
             # append data arrays
             flux_list.append(flux_rest)
+            total_processed += 1  # <-- Add this line
+
+        if max_spec is not None and total_processed >= max_spec:
+            break  # Stop processing more files
 
     matched_tables = vstack(table_list)
-    matched_tables.write(os.path.join(labels_dir, 'labels.csv'), format='ascii.csv', overwrite=True)
+    labels_df = matched_tables.to_pandas()
 
-    # Convert the collected flux arrays into a NumPy array
+    # Remove all rows with any NaNs
+    labels_df_clean = labels_df.dropna().reset_index(drop=True)
+    #logging.info(f"There are {labels_df_clean.isnull().sum()} NaNs in the labels DataFrame after cleaning.")
+
     if flux_list:
-        big_flux_array = np.vstack(flux_list)
-        dump(big_flux_array, os.path.join(spec_dir, "flux.joblib"))
-        logging.info(f"Saved {len(flux_list)} spectra.")
-
-    # Save the matched tables
-    if table_list:
-        matched_tables = vstack(table_list)
-        matched_tables.write(os.path.join(labels_dir, 'labels.csv'), format='ascii.csv', overwrite=True)
+        flux_array = np.vstack(flux_list)
+        # Now use the cleaned, reset index
+        flux_array_clean = flux_array[:len(labels_df_clean)]
+        dump(flux_array_clean, os.path.join(spec_dir, "flux.joblib"))
+        labels_df_clean.to_csv(os.path.join(labels_dir, 'labels.csv'), index=False)
+    else:
+        labels_df_clean.to_csv(os.path.join(labels_dir, 'labels.csv'), index=False)
 
     end_time = time.time()
     logging.info(f"Preprocessing is complete in {(end_time-start_time)/60:.2f}")
 
 if __name__ == "__main__":
-    preprocess_spectra()
+    try:
+        preprocess_spectra()
+    except Exception as e:
+        logging.exception(f"Unexpected crash: {e}")

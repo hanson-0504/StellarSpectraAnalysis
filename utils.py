@@ -4,13 +4,17 @@ import logging
 import argparse
 
 
-def setup_env(config):
+def setup_env(config_path):
     """
     Ensures necessary directories exist and sets up logging based on config.
     
     Args:
-        config (dict): Parsed configuration dictionary from YAML.
+        config_path (string): path to configuration details.
     """
+    # Load configuration
+    config = load_config(config_path)
+    if config is None:
+        raise ValueError(f"Failed to load configuration from {config_path}")
     # Create directories dynamically from the config file
     directories = config.get("directories", {})
     for key, directory in directories.items():
@@ -74,6 +78,7 @@ def parse_arguments():
     parser.add_argument("--fits_dir", type=str, help="Path to FITS files (overrides config)")
     parser.add_argument("--labels_dir", type=str, help="Path to labels")
     parser.add_argument("--output_dir", type=str, help="Path to outputs")
+    parser.add_argument("--max_spec", type=int, default=None, help="Maximum number of spectra to process")
 
     return parser.parse_args()
 
