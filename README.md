@@ -14,19 +14,25 @@ This project is designed to analyse stellar spectra and infer physical parameter
 
 ## Project Structure
 
-    ├── data/                 # Contains spectral data and labels  
-    │   ├── flux.joblib       # Preprocessed flux values  
-    │   ├── labels.csv        # Stellar parameters and abundances  
-    │
+    ├── data/                 # Contains spectral data and labels 
+    |   ├── spectral_dir/
+    |   │   ├── flux.joblib       # Preprocessed flux values  
+    |   |   ├── spectral fits files
+    |
+    │   ├── labels_dir/        # Stellar parameters and abundances  
+    │   │   ├── labels for parameters (fits files)
+    │   │   ├── parameter names (txt file)
+    |
     ├── models/               # Stores trained models  
-    │   ├── teff_model.joblib  
+    │   ├── teff_model.joblib  (.keras for neural network model) 
     │   ├── fe_h_model.joblib  
     │   ├── (other element models)  
     │
+    ├── config.yaml           # Configuration file (manages directories and files)
     ├── train_model.py        # Main script for training models  
     ├── predict.py            # Script for making predictions  
     ├── preprocess.py         # Preprocess spectra (normalisation, Doppler correction, etc.)
-    ├── utils.py              # Helper functions (interpolation, Doppler shift, etc.)  
+    ├── utils.py              # Helper functions (setup_env, read_text_file, etc)  
     ├── requirements.txt      # List of dependencies  
     └── README.md             # This file  
 
@@ -34,8 +40,8 @@ This project is designed to analyse stellar spectra and infer physical parameter
 
 ### 1. Clone Repository
 
-    git clone "url_to_repository.git"
-    cd "directory"
+    git clone "[url_to_repository.git](https://github.com/hanson-0504/StellarSpectraAnalysis.git)"
+    cd "StellarSpectraAnalysis"
 
 ### 2. Create a Virtual Environment & Install Dependencies
 
@@ -45,14 +51,32 @@ This project is designed to analyse stellar spectra and infer physical parameter
 
 ## Usage
 
+### Get Data
+
+To train the machine learning models, you need stellar parameters and abundances. This project used the APOGEE data.
+
+#### Download APOGEE AllStar Catalog
+
+Navigate to labels directory:
+
+    cd data/label_dir/
+
+Download the master APOGEE DR17 label file:
+
+    wget https://data.sdss.org/sas/dr17/apogee/spectro/aspcap/dr17/synspec_rev1/allStar-dr17-synspec_rev1.fits
+
+#### Optional: Filter Catalog
+
+Filter stars or specific elements using Astropy or pandas, depending on science focus
+
 ### 1. Preprocess Spectral Dataset
 
 Before training models, the data needs preprocessing. This step reads FITS files, extracts the flux values, applies Doppler corrections, and normalises the flux.
 
-    python preprocess.py --fits_dir <path_to_fits_files> --exclude_pattern <pattern_to_exclude>
+    python preprocess.py --fits_dir <path_to_fits_files> --labels_dir <path_to_labels_files>
 
-- --fits_dir: The directory containing the FITS files (default is data/).
-- --exclude_pattern: A pattern to exclude certain FITS files from the processing (e.g., apogee_set.fits).
+- --fits_dir: The directory containing the FITS files (default is data/sectral_dir).
+- --labels_dir: The directory containing the labels for parameters (e.g., apogee_set.fits).
 
 ### 2. Train Models
 
@@ -60,7 +84,7 @@ After preprocessing the data, you can train the models to estimate the stellar p
 
     python train_model.py
 
-This will train models for each stellar parameter and chemical abundance, then save the trained odels in the models/ directory.
+This will train models for each stellar parameter and chemical abundance, then save the trained models in the models/ directory.
 
 ### 3. Make Predictions
 
@@ -81,13 +105,3 @@ To evaluate the performance of the trained models, RMSE (Root Mean Squared Error
 ### 5. View Residuals
 
 For each parameter, the residuals (the difference between the true values and the predicted values) are calculated and saved in the residuals/ directory. These can help you analyze how well the models are performing on different spectra.
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgements
-
-    FITS: Flexible Image Transport System files for storing astronomical data.
-    Scikit-learn: Used for machine learning models and evaluation.
-    Astropy: Provides utility functions for handling FITS files and celestial coordinates.
