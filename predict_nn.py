@@ -7,7 +7,7 @@ import pandas as pd
 from tqdm import tqdm
 from joblib import load
 import tensorflow as tf
-from tf.keras.models import load_model
+from tensorflow.keras.models import load_model
 from neural_network import predict_with_nn
 from utils import setup_env, parse_arguments, load_config, read_text_file
 
@@ -38,8 +38,9 @@ def load_and_predict():
                 logging.warning(f"Model file for {param} not found. Skipping...")
                 continue
             model = load_model(model_path)
-            y = labels[param].to_numpy()
-            X = flux
+            N = min(flux.shape[0], len(labels))
+            y = labels[param].to_numpy()[:N]
+            X = flux[:N]
             # Make Mask
             mask = ~np.isnan(y) & ~np.isnan(feh)
             feh_masked, y_masked, X_masked = feh[mask], y[mask], X[mask]

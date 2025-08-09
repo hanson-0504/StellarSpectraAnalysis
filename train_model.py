@@ -48,7 +48,7 @@ def train_and_save_models():
     start_time = time.time()
     args = parse_arguments()
     config = load_config(args.config)
-    setup_env(config)
+    setup_env(args.config)
 
     # Load all the data
     spec_dir = args.fits_dir or config['directories'].get('spectral', 'data/spectral_dir')
@@ -57,19 +57,28 @@ def train_and_save_models():
     model_dir = config['directories'].get('models', 'data/model_dir/')
     labels = pd.read_csv(os.path.join(labels_dir, "labels.csv"))
     param_names = read_text_file(os.path.join(labels_dir, 'label_names.txt'))
-
+        
     pipeline = Pipeline([
         ('scaler', StandardScaler()),
-        ('ipca', IncrementalPCA(n_components=100)),
+        ('ipca', IncrementalPCA()),
         ('random_forest', RandomForestRegressor(random_state=42))
     ])
-    param_grid = {
-        'ipca__n_components': [50, 100, 200],  # Vary the number of IPCA components
-        'random_forest__n_estimators': [50, 100, 200],  # Number of trees in the forest
-        'random_forest__max_depth': [None, 10, 20],  # Tree depth
-        'random_forest__min_samples_split': [2, 5, 10],  # Minimum samples to split a node
-        'random_forest__min_samples_leaf': [1, 2, 4],  # Minimum samples in a leaf node
-    }
+    if flux.shape[0] < 100:
+        param_grid = {
+            'ipca__n_components': [2, 5],  # Use fewer components for small datasets
+            'random_forest__n_estimators': [20, 50],  # Number of trees in the forest
+            'random_forest__max_depth': [None, 5],  # Tree depth
+            'random_forest__min_samples_split': [2, 5],  # Minimum samples to split a node
+            'random_forest__min_samples_leaf': [1, 2],  # Minimum samples in a leaf node
+        }
+    else:
+        param_grid = {
+            'ipca__n_components': [50, 100, 200],  # Vary the number of IPCA components
+            'random_forest__n_estimators': [50, 100, 200],  # Number of trees in the forest
+            'random_forest__max_depth': [None, 10, 20],  # Tree depth
+            'random_forest__min_samples_split': [2, 5, 10],  # Minimum samples to split a node
+            'random_forest__min_samples_leaf': [1, 2, 4],  # Minimum samples in a leaf node
+        }
 
     for param in tqdm(param_names, desc='Training Models'):
         try:

@@ -3,11 +3,9 @@ import sys
 import numpy as np
 import subprocess
 from astropy.io import fits
-from pathlib import Path
 from astropy.table import Table
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 from preprocess import *
 def test_doppler():
     wave = np.array([100, 200, 300])

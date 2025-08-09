@@ -8,9 +8,22 @@ from tqdm import tqdm
 from joblib import load
 from neural_network import train_neural_network
 from utils import parse_arguments, load_config, setup_env, read_text_file
+import tensorflow as tf
 
 
 def train_and_save_models():
+    # Log available GPUs
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        logging.info(f"GPUs available: {[gpu.name for gpu in gpus]}")
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+        except Exception as e:
+            logging.warning(f"Could not set memory growth: {e}")
+    else:
+        logging.warning("No GPU found. Training will use CPU.")
+
     start_time = time.time()
     args = parse_arguments()
     config = load_config(args.config)
@@ -27,7 +40,8 @@ def train_and_save_models():
     for param in tqdm(param_names, desc='Training Models'):
         try:
             param_start = time.time()
-            y = labels[param].to_numpy()
+            N = flux.shape[0]
+            y = labels[param].to_numpy()[:N]  # Align label length to flux
             X = flux
 
             # Mask NaNs
