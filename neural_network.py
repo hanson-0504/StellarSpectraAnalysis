@@ -32,8 +32,7 @@ def build_nn_model(hp, input_shape, use_physics_loss=False):
     optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
 
     # Compile the model with the loss function
-    model.compile(optimizer=optimizer, loss=loss_function(hp, use_physics_loss=use_physics_loss))
-    
+    model.compile(optimizer=optimizer)
     return model
 
 def train_neural_network(X, y, param_name):
@@ -43,7 +42,7 @@ def train_neural_network(X, y, param_name):
     
     # Define Keras Tuner with RandomSearch
     tuner = kt.RandomSearch(
-        lambda hp: build_nn_model(hp, input_shape=X_train.shape[1], use_physics_loss=True),
+        lambda hp: build_nn_model(hp, input_shape=X_train.shape[1]),
         objective='val_loss',
         max_trials=10,
         executions_per_trial=1,
@@ -81,41 +80,3 @@ def predict_with_nn(model, X):
     """Predict using the trained neural network model."""
     return model.predict(X)
 
-def compute_physics_loss(y_pred, min_val=-2.0, max_val=2.0):
-    """Calculates the physics loss for predictions outside the specified range."""
-    lower_violation = tf.nn.relu(min_val - y_pred)  # Penalize predictions below min_val
-    upper_violation = tf.nn.relu(y_pred - max_val)  # Penalize predictions above max_val
-    physics_loss = tf.reduce_mean(tf.square(lower_violation) + tf.square(upper_violation))
-    return physics_loss
-
-def loss_function(hp=None, min_val=-2.0, max_val=2.0, use_physics_loss=False):
-    """
-    Creates a loss function that optionally combines data loss and physics loss.
-    
-    Args:
-        hp: Hyperparameter object (optional, for tuning physics loss weight).
-        min_val: Minimum valid value for predictions.
-        max_val: Maximum valid value for predictions.
-        use_physics_loss: Whether to include physics loss in the combined loss.
-
-    Returns:
-        A loss function to be used in model compilation.
-    """
-    # Set the physics loss weight (tunable if hp is provided)
-    physics_loss_weight = hp.Float('physics_loss_weight', min_value=0.01, max_value=1.0, sampling='LOG') if hp else 1.0
-
-    def loss(y_true, y_pred):
-        """Combined loss function."""
-        # Data loss (mean squared error)
-        data_loss = tf.reduce_mean(tf.square(y_true - y_pred))
-        
-        if use_physics_loss:
-            # Physics loss
-            physics_loss = compute_physics_loss(y_pred, min_val, max_val)
-            # Combine data loss and physics loss
-            return data_loss + physics_loss_weight * physics_loss
-        else:
-            # Return only data loss if physics loss is not used
-            return data_loss
-
-    return loss

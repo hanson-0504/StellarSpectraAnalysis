@@ -1,107 +1,83 @@
 # Stellar Parameter and Chemical Abundances Estimation
 
-This project applies **machine learning** to estimate stellar parameters ($T_\text{eff}$, $\log g$, [Fe/H]) and chemical abundances from spectral data. It uses **Random Forest Regression** with **IncrementalPCA** for dimensionality reduction. The input consists of stellar spectra (flux vs. wavelength), and the output includes estimates of the parameters and abundances.
+This project leverages machine learning to estimate stellar parameters ($T_\text{eff}$, $\log g$, [Fe/H]) and chemical abundances from stellar spectra. It integrates automated preprocessing, model training, and evaluation to facilitate efficient analysis of large spectral datasets.
 
-## Overview
+## Features
 
-This project is designed to analyse stellar spectra and infer physical parameters and chemical abundances. The workflow consists of:
-
-1. **Data Preprocessing**: Reads FITS files, extracts flux values, and handles missing values.
-2. **Feature Engineering**: Normalises flux, applies Doppler corrections, and interpolates missing values.
-3. **Machine Learning**: Uses **Random Forest Regression** with hyperparameter tuning.
-4. **Model Tuning & Evaluation**: Trains separate models for each parameter, performs cross-validation, and evaluates performance using RMSE.
-5. **Prediction**: Given a new spectrum, the trained models can estimate the stellar parameters.
-
-## Project Structure
-
-    ├── data/                 # Contains spectral data and labels 
-    |   ├── spectral_dir/
-    |   │   ├── flux.joblib       # Preprocessed flux values  
-    |   |   ├── spectral fits files
-    |
-    │   ├── labels_dir/        # Stellar parameters and abundances  
-    │   │   ├── labels for parameters (fits files)
-    │   │   ├── parameter names (txt file)
-    |
-    ├── models/               # Stores trained models  
-    │   ├── teff_model.joblib  (.keras for neural network model) 
-    │   ├── fe_h_model.joblib  
-    │   ├── (other element models)  
-    │
-    ├── config.yaml           # Configuration file (manages directories and files)
-    ├── train_model.py        # Main script for training models  
-    ├── predict.py            # Script for making predictions  
-    ├── preprocess.py         # Preprocess spectra (normalisation, Doppler correction, etc.)
-    ├── utils.py              # Helper functions (setup_env, read_text_file, etc)  
-    ├── requirements.txt      # List of dependencies  
-    └── README.md             # This file  
+- Estimates stellar parameters and chemical abundances from spectral data  
+- Supports Random Forest Regression and neural network models  
+- Automated preprocessing including normalization and Doppler correction  
+- Dimensionality reduction with IncrementalPCA  
+- Hyperparameter tuning and cross-validation  
+- Comprehensive evaluation with RMSE and residual analysis  
 
 ## Installation
 
-### 1. Clone Repository
+1. Clone the repository:  
+   `git clone https://github.com/hanson-0504/StellarSpectraAnalysis.git`  
+   `cd StellarSpectraAnalysis`
 
-    git clone "[url_to_repository.git](https://github.com/hanson-0504/StellarSpectraAnalysis.git)"
-    cd "StellarSpectraAnalysis"
+2. Create and activate a virtual environment:  
+   `conda create --name stell_ml python=3.12`  
+   `conda activate stell_ml`
 
-### 2. Create a Virtual Environment & Install Dependencies
-
-    conda create --name stell_ml python=3.12
-    conda activate stell_ml
-    pip install -r requirements.txt
+3. Install dependencies:  
+   `pip install -r requirements.txt`
 
 ## Usage
 
-### Get Data
+- **Preprocess spectra:**  
+  `python preprocess.py --fits_dir <path_to_fits_files> --labels_dir <path_to_labels_files>`
 
-To train the machine learning models, you need stellar parameters and abundances. This project used the APOGEE data.
+- **Train models:**  
+  `python train_model.py`
 
-#### Download APOGEE AllStar Catalog
+- **Make predictions:**  
+  `python predict.py --fits_dir <path_to_fits_files>`
 
-Navigate to labels directory:
+- **Evaluate models:**  
+  Review RMSE and residuals saved in the results directory
 
-    cd data/label_dir/
+## Project Structure
 
-Download the master APOGEE DR17 label file:
+```
+├── data/                  # Spectral data and labels
+│   ├── spectral_dir/      # Preprocessed flux and FITS spectral files
+│   └── labels_dir/        # Stellar parameters and chemical abundances
+│
+├── models/                # Trained models (Random Forest, neural nets)
+│
+├── results/               # Predictions, RMSE, residuals
+│
+├── config.yaml            # Configuration settings
+├── preprocess.py          # Preprocessing scripts
+├── train_model.py         # Model training scripts
+├── predict.py             # Prediction scripts
+├── utils.py               # Helper functions
+├── requirements.txt       # Python dependencies
+└── README.md              # Project documentation
+```
 
-    wget https://data.sdss.org/sas/dr17/apogee/spectro/aspcap/dr17/synspec_rev1/allStar-dr17-synspec_rev1.fits
+## Data Preparation
 
-#### Optional: Filter Catalog
+- Download the APOGEE DR17 AllStar catalog from:  
+  `https://data.sdss.org/sas/dr17/apogee/spectro/aspcap/dr17/synspec_rev1/allStar-dr17-synspec_rev1.fits`
 
-Filter stars or specific elements using Astropy or pandas, depending on science focus
+- Place the catalog in the `data/labels_dir/` directory.
 
-### 1. Preprocess Spectral Dataset
+- Optionally filter stars or elements using Astropy or pandas before training.
 
-Before training models, the data needs preprocessing. This step reads FITS files, extracts the flux values, applies Doppler corrections, and normalises the flux.
+## Training & Prediction
 
-    python preprocess.py --fits_dir <path_to_fits_files> --labels_dir <path_to_labels_files>
+1. **Preprocess the spectral data** to extract and normalize flux, apply Doppler corrections, and handle missing values.  
+2. **Train models** for each stellar parameter and abundance using `train_model.py`.  
+3. **Predict** parameters on new spectra with `predict.py` using the trained models.
 
-- --fits_dir: The directory containing the FITS files (default is data/sectral_dir).
-- --labels_dir: The directory containing the labels for parameters (e.g., apogee_set.fits).
+## Results
 
-### 2. Train Models
+- Trained models are saved in the `models/` directory.  
+- Prediction outputs, RMSE metrics, and residuals are stored in the `results/` directory for performance analysis.
 
-After preprocessing the data, you can train the models to estimate the stellar parameters and chemical abundances. The training process uses Random Forest Regression and IncrementalPCA for dimensionality reduction. To train models, run:
+## License
 
-    python train_model.py
-
-This will train models for each stellar parameter and chemical abundance, then save the trained models in the models/ directory.
-
-### 3. Make Predictions
-
-Once the models are trained, you can use them to make predictions on new spectra. Provide the preprocessed spectral data and the trained models will estimate the stellar parameters and abundances.
-
-To make predictions, run:
-
-    python predict.py --fits_dir <path_to_its_files>
-
-- --fits_dir: The directory containing the FITS files to predict on (default is data/).
-
-The predictions will be saved in the results/ directory.
-
-### 4. View Model Performance
-
-To evaluate the performance of the trained models, RMSE (Root Mean Squared Error) values are calculated for each parameter. These are saved in results/predictions_errors.csv. You can review the model performance in this file.
-
-### 5. View Residuals
-
-For each parameter, the residuals (the difference between the true values and the predicted values) are calculated and saved in the residuals/ directory. These can help you analyze how well the models are performing on different spectra.
+This project is licensed under the MIT License. See the LICENSE file for details.

@@ -4,20 +4,26 @@ import logging
 import argparse
 
 
-def setup_env(config_path):
+def setup_env(config_source):
     """
     Ensures necessary directories exist and sets up logging based on config.
-    
+
     Args:
-        config_path (string): path to configuration details.
+        config_source (str | dict): Path to configuration file or a config dictionary.
     """
     # Load configuration
-    config = load_config(config_path)
-    if config is None:
-        raise ValueError(f"Failed to load configuration from {config_path}")
+    if isinstance(config_source, str):
+        config = load_config(config_source)
+        if config is None:
+            raise ValueError(f"Failed to load configuration from {config_source}")
+    elif isinstance(config_source, dict):
+        config = config_source
+    else:
+        raise TypeError("config_source must be ether file path (str) or a config dict")
+    
     # Create directories dynamically from the config file
     directories = config.get("directories", {})
-    for key, directory in directories.items():
+    for key, directory in config.get("directories", {}).items():
         if directory:
             os.makedirs(directory, exist_ok=True)
 

@@ -8,6 +8,7 @@ from joblib import dump
 from scipy import constants
 from astropy.io import fits
 from astropy import units as u
+from types import SimpleNamespace
 from astropy.table import Table, vstack
 from scipy.ndimage import median_filter
 from astropy.coordinates import SkyCoord
@@ -36,7 +37,7 @@ def doppler_shift(wave_obs, flux, v, wave_grid):
 
 
 def interpolate_masked_values(spectrum, mask):
-    spectrum = np.copy(spectrum)  # Ensure original data isn't modified
+    spectrum = np.copy(spectrum)# Ensure original data isn't modified
     mask = mask.astype(bool)# Ensure the mask is boolean
 
     if np.all(mask):
@@ -53,75 +54,73 @@ def interpolate_masked_values(spectrum, mask):
 
 
 def combine_tables(table1, table2, parameters):
-    """Matches DESI spectra table with Apogee table."""
+    """Matches DESI spectra (table1) with APOGEE table (table2) by RA/Dec."""
     try:
         if len(table1) == 0 or len(table2) == 0:
             raise ValueError("One of the input tables is empty.")
 
-        # Create case-insensitive column mappings for both tables
-        table1_cols = {col.lower(): col for col in table1.colnames}
-        table2_cols = {col.lower(): col for col in table2.colnames}
+        t1 = {c.lower(): c for c in table1.colnames}
+        t2 = {c.lower(): c for c in table2.colnames}
 
-        # Standardized column names
-        target_ra_col = table1_cols.get('target_ra', None)
-        target_dec_col = table1_cols.get('target_dec', None)
-        ra_col = table2_cols.get('ra', None)
-        dec_col = table2_cols.get('dec', None)
-        vhelio_col = table2_cols.get('vhelio_avg', None)
+        # Must exist in these specific tables:
+        for need, colmap, name in [
+            ('target_ra', t1, 'table1'),
+            ('target_dec', t1, 'table1'),
+            ('ra',        t2, 'table2'),
+            ('dec',       t2, 'table2'),
+            ('vhelio_avg',t2, 'table2'),
+        ]:
+            if need not in colmap:
+                raise KeyError(f"Missing required column '{need}' in {name}. Got: {list(colmap.values())}")
 
-        # Check if necessary columns exist
-        required_cols = ['target_ra', 'target_dec', 'ra', 'dec', 'vhelio_avg']
-        missing_cols = [c for c in required_cols if c not in table1_cols and c not in table2_cols]
-        if missing_cols:
-            raise KeyError(f"Missing required columns: {missing_cols}. Available columns in table1: {table1.colnames}, table2: {table2.colnames}")
+        target_ra_col = t1['target_ra']; target_dec_col = t1['target_dec']
+        ra_col = t2['ra']; dec_col = t2['dec']; vhelio_col = t2['vhelio_avg']
 
-        # Clean data: ensure finite values
         table1_clean = table1[np.isfinite(table1[target_ra_col]) & np.isfinite(table1[target_dec_col])]
         table2_clean = table2[np.isfinite(table2[ra_col]) & np.isfinite(table2[dec_col])]
-
         if len(table1_clean) == 0 or len(table2_clean) == 0:
-            raise ValueError("No valid coordinates found after cleaning tables.")
+            raise ValueError("No valid coordinates after cleaning.")
 
-        # Convert to SkyCoord objects
         coords1 = SkyCoord(ra=table1_clean[target_ra_col], dec=table1_clean[target_dec_col], unit=(u.deg, u.deg))
-        coords2 = SkyCoord(ra=table2_clean[ra_col], dec=table2_clean[dec_col], unit=(u.deg, u.deg))
+        coords2 = SkyCoord(ra=table2_clean[ra_col],       dec=table2_clean[dec_col],       unit=(u.deg, u.deg))
 
-        # Cross-match tables
+        # idx1 -> table1_clean; idx2 -> table2_clean
         idx1, idx2, sep2d, _ = coords1.search_around_sky(coords2, 3 * u.arcsec)
-
         if len(idx1) == 0:
             logging.warning("No matches found between tables.")
             return Table(), np.array([])
 
-        # Ensure unique matches
-        unique_idx = np.unique(idx2, return_index=True)[1]
-        idx1, idx2 = idx1[unique_idx], idx2[unique_idx]
+        # Ensure unique matches on table1 side (one APOGEE row per DESI row or vice versa;
+        # choose the direction that matches your use-case; here we keep unique table1 rows)
+        unique_on_t1 = np.unique(idx1, return_index=True)[1]
+        idx1 = idx1[unique_on_t1]
+        idx2 = idx2[unique_on_t1]
 
-        # Create matched table
-        matched_table = Table()
-        matched_table['ra'] = table1_clean[target_ra_col][idx2]
-        matched_table['dec'] = table1_clean[target_dec_col][idx2]
-        matched_table['vhelio'] = table2_clean[vhelio_col][idx1]
+        matched = Table()
+        matched['ra']     = table1_clean[target_ra_col][idx1]
+        matched['dec']    = table1_clean[target_dec_col][idx1]
+        matched['vhelio'] = table2_clean[vhelio_col][idx2]
 
-        # Generalized parameter selection
+        # Copy requested parameters from table2
+        t2_cols = {c.lower(): c for c in table2_clean.colnames}
         for param in parameters:
-            param_col = table2_cols.get(param.lower(), None)
-            if param_col:
-                matched_table[param] = table2_clean[param_col][idx1]
+            p = t2_cols.get(param.lower())
+            if p is not None:
+                matched[param] = table2_clean[p][idx2]
             else:
-                logging.warning(f"Parameter {param} not found in table2.")
+                logging.warning(f"Parameter '{param}' not found in table2.")
 
-        logging.info(f"Matched {len(matched_table)} spectra.")
-        return matched_table, idx2
-
+        logging.info(f"Matched {len(matched)} spectra.")
+        return matched, idx1  # indices into table1_clean (so you can subset arrays consistently)
     except Exception as e:
         logging.error(f"Error in combine_tables(): {e}", exc_info=True)
         return Table(), np.array([])
 
 
-def preprocess_spectra():
+def preprocess_spectra(args = None):
     start_time = time.time()
-    args = parse_arguments()
+    if args is None:
+        args = parse_arguments()
     setup_env(args.config)
     config = load_config(args.config)
 
@@ -133,6 +132,9 @@ def preprocess_spectra():
         logging.error("No Fits files found!")
         return
     label_files = glob.glob(os.path.join(labels_dir, '*.fits'))
+    if not label_files:
+        logging.error(f"No label FITS files found in {labels_dir}")
+        return
     param_names = read_text_file(os.path.join(labels_dir, 'label_names.txt'))
 
     with fits.open(label_files[0], memap=True) as hdus:
@@ -140,12 +142,14 @@ def preprocess_spectra():
     available_columns = {col.lower(): col for col in f.colnames}
     # Standardize parameter names (case-insensitive)
     parameters = ['ra', 'dec', 'vhelio_avg'] + param_names
-    normalized_parameters = [available_columns.get(param.lower(), param) for param in parameters]
-
-    # Extract table data
-    apogee_table = Table(data=f[normalized_parameters])
+    keep = []
+    for p in parameters:
+        col = available_columns.get(p.lower())
+        if col: keep.append(col)
+        else:   logging.warning(f"Column '{p}' not in APOGEE file; skipping.")
+    apogee_table = Table(data=f[keep])
     del f
-    # apogee_table.write("data/apogee_data.csv", format='ascii.csv', overwrite=True)
+    apogee_table.write("data/apogee_data.csv", format='ascii.csv', overwrite=True)
 
     num_spec = 0
     for file in fits_files:
@@ -153,7 +157,7 @@ def preprocess_spectra():
             num_spec += hdu['B_FLUX'].shape[0]
     logging.info(f"Number of spectra = {num_spec}")
 
-    max_spec = args.max_spec  # <-- Add this line
+    max_spec = getattr(args, "max_spec", None)
 
     flux_list = []
     table_list = []
@@ -182,7 +186,7 @@ def preprocess_spectra():
 
         # Eliminate the last 25 wavelengths from camera B
         wave1 = np.array(wave['B'])
-        mask1 = np.array(mask['B'])[matched_indices]
+        mask1 = (np.array(mask['B'])[matched_indices] != 0)
         flux1 = np.array(flux['B'])[matched_indices]
 
         wave1 = wave1[:-25]
@@ -195,7 +199,7 @@ def preprocess_spectra():
         wave2 = wave2[26:]
         wave2 = wave2[:-63]
 
-        mask2 = np.array(mask['R'])[matched_indices]
+        mask2 = (np.array(mask['R'])[matched_indices] != 0)
         mask2 = mask2[:, 26:]
         mask2 = mask2[:, :-63]
 
@@ -206,7 +210,7 @@ def preprocess_spectra():
         # Eliminate the first 63 wavelengths from camera Z
         wave3 = np.array(wave['Z'])
         wave3 = wave3[63:]
-        mask3 = np.array(mask['Z'])[matched_indices]
+        mask3 = (np.array(mask['Z'])[matched_indices] != 0)
         mask3 = mask3[:, 63:]
         flux3 = np.array(flux['Z'])[matched_indices]
         flux3 = flux3[:, 63:]
@@ -260,6 +264,22 @@ def preprocess_spectra():
 
     end_time = time.time()
     logging.info(f"Preprocessing is complete in {(end_time-start_time)/60:.2f}")
+
+def run(fits_dir=None, labels_dir=None, config_path="config.yaml", max_spec=None):
+    """Programmatic entry point used by agents/tools.py.
+    
+    Examples
+    --------
+    >>> import preprocess as pp
+    >>> pp.run(fits_dir="data/spectral_dir", labels_dir="data/label_dir", max_spec=500)
+    """
+    args = SimpleNamespace(
+        fits_dir=fits_dir,
+        labels_dir=labels_dir,
+        config=config_path,
+        max_spec=max_spec,
+    )
+    return preprocess_spectra(args)
 
 if __name__ == "__main__":
     try:

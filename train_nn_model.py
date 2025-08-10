@@ -6,13 +6,15 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from joblib import load
+from types import SimpleNamespace
 from neural_network import train_neural_network
 from utils import parse_arguments, load_config, setup_env, read_text_file
 
 
-def train_and_save_models():
+def train_and_save_models(args=None):
     start_time = time.time()
-    args = parse_arguments()
+    if args is None:
+        args = parse_arguments()
     config = load_config(args.config)
     setup_env(config)
 
@@ -25,6 +27,10 @@ def train_and_save_models():
     param_names = read_text_file(os.path.join(labels_dir, 'label_names.txt'))
 
     for param in tqdm(param_names, desc='Training Models'):
+        # Skip if this parameter column is not present in labels
+        if param not in labels.columns:
+            logging.warning(f"Skipping {param}: column not found in labels.csv")
+            continue
         try:
             param_start = time.time()
             y = labels[param].to_numpy()
@@ -51,6 +57,16 @@ def train_and_save_models():
     end_time = time.time()
     print(f'Training completed in {(end_time - start_time) / 60:.2f} min')
 
+def run(fits_dir=None, labels_dir=None, config_path='config.yaml'):
+    args = SimpleNamespace(
+        fits_dir=fits_dir,
+        labels_dir=labels_dir,
+        config=config_path,
+    )
+    return train_and_save_models(args)
 
 if __name__ == "__main__":
-    train_and_save_models()
+    try:
+        train_and_save_models()
+    except Exception as e:
+        logging.error(f"An error occurred during prediction: {e}")

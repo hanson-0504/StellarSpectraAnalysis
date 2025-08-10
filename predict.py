@@ -1,83 +1,166 @@
-import gc
+"""Unified prediction dispatcher.
+
+Chooses Random-Forest or Neural-Network prediction based on available model
+files ('.joblib' for RF, '.keras' for NN) or an explicit `kind` argument.
+This module delegates to `predict_rf.py` and `predict_nn.py` if present.
+
+Usage (programmatic):
+    from predict import predict
+    summary = predict(kind="auto", model_dir="data/models/", ...)
+
+This function returns whatever the underlying predictor returns; if that
+returns nothing, we provide a small summary dict for agents.
+"""
+from __future__ import annotations
+
 import os
-import time
 import logging
-import numpy as np
-import pandas as pd
-from tqdm import tqdm
-from joblib import load
-from sklearn.metrics import root_mean_squared_error
-from sklearn.model_selection import cross_val_predict
-from utils import setup_env, parse_arguments, read_text_file, load_config
+from pathlib import Path
+from typing import Dict, List, Tuple, Any, Optional
+
+# Lazy imports so the module can be imported even if only one backend exists
+try:
+    import predict_rf as _rf
+except Exception:  # noqa: BLE001
+    _rf = None  # type: ignore
+
+try:
+    import predict_nn as _nn
+except Exception:  # noqa: BLE001
+    _nn = None  # type: ignore
 
 
-def load_and_predict():
-    start_time = time.time()
-    args = parse_arguments()
-    config = load_config(args.config)
-    setup_env(config)
+def _scan_models(model_dir: str) -> Tuple[List[Path], List[Path], float, float]:
+    """Return (rf_files, nn_files, latest_rf_mtime, latest_nn_mtime)."""
+    p = Path(model_dir)
+    rf_files: List[Path] = sorted(p.glob("*.joblib"))
+    nn_files: List[Path] = sorted(p.glob("*.keras"))
+    latest = lambda xs: max((x.stat().st_mtime for x in xs), default=0.0)
+    return rf_files, nn_files, latest(rf_files), latest(nn_files)
 
-    # load spectra
-    labels_dir = args.labels_dir or config['directories'].get('labels', 'data/label_dir/')
-    spec_dir = args.fits_dir or config['directories'].get('spectral', 'data/spectral_dir')
-    output_dir = args.output_dir or config['directories'].get('output', 'output/')
-    model_dir = config['directories'].get('models', 'data/models/')
-    flux = load(os.path.join(spec_dir, 'flux.joblib'))
-    labels = pd.read_csv(os.path.join(labels_dir, 'labels.csv'))
-    feh = labels['fe_h'].to_numpy()
-    param_names = read_text_file(os.path.join(labels_dir, 'label_names.txt'))
-    errors = []
 
-    for param in tqdm(param_names, desc='Predicting'):
-        try:
-            param_start = time.time()
-            # load training model
-            pipeline = load(os.path.join(model_dir, f"{param}_model.joblib"))
-            # Prepare Data
-            y = labels[param].to_numpy()
-            X = flux
+def _predict_rf(**kw: Any) -> Any:
+    if _rf is None:
+        raise ImportError("predict_rf.py is not available")
+    # Prefer a clean run() wrapper if provided
+    if hasattr(_rf, "run"):
+        return _rf.run(**kw)
+    # Fallback to older API
+    if hasattr(_rf, "load_and_predict"):
+        return _rf.load_and_predict(**kw)
+    raise AttributeError("predict_rf has no run() or load_and_predict()")
 
-            mask = ~np.isnan(y) & ~np.isnan(feh)
-            feh_masked, y_masked, X_masked = feh[mask], y[mask], X[mask]
-            del mask, X, y  # Free memory
-            gc.collect()
 
-            # Predict
-            predictions = cross_val_predict(pipeline, X_masked, y_masked, cv=5)
-            errors.append(root_mean_squared_error(y_masked, predictions))
+def _predict_nn(**kw: Any) -> Any:
+    if _nn is None:
+        raise ImportError("predict_nn.py is not available")
+    if hasattr(_nn, "run"):
+        return _nn.run(**kw)
+    if hasattr(_nn, "load_and_predict"):
+        return _nn.load_and_predict(**kw)
+    raise AttributeError("predict_nn has no run()/load_and_predict()/main()")
 
-            # Save results
-            pd.DataFrame({
-                param:predictions,
-                '[Fe/H]':feh_masked
-            }).to_csv(os.path.join(output_dir, f"results/{param}_predictions.csv"), index=False)
 
-            # Residuals
-            residuals = y_masked - predictions
-            pd.DataFrame({
-                '[Fe/H]':feh_masked,
-                'Residuals':residuals
-            }).to_csv(os.path.join(output_dir, f"residuals/{param}.csv"), index=False)
+def predict(
+    kind: str = "auto",
+    *,
+    fits_dir: Optional[str] = None,
+    labels_dir: Optional[str] = None,
+    model_dir: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    config_path: str = "config.yaml",
+) -> Any:
+    """Top-level prediction entrypoint.
 
-            logging.info(f'Predictions and residuals for {param} saved successfully!')
-            param_end = time.time()
-            logging.info(f"{param} processed in {(param_end - param_start) / 60:.2f} min")
+    Parameters
+    ----------
+    kind : {"auto", "rf", "nn"}
+        Which predictor to use. "auto" inspects `model_dir` and prefers the
+        model family whose newest file is most recent (falls back sensibly if
+        only one family exists).
+    fits_dir, labels_dir, model_dir, output_dir, config_path : str
+        Usual IO arguments passed through to the underlying backend.
 
-            del X_masked, y_masked, feh_masked, predictions, residuals
-            gc.collect()
+    Returns
+    -------
+    Any
+        Whatever the backend returns. If it returns None, we synthesize a small
+        summary dict for agent logging.
+    """
+    model_dir = model_dir or "data/models/"
 
-        except Exception as e:
-            logging.error(f'Error processing {param}: {e}')
-            continue
+    rf_files, nn_files, lrf, lnn = _scan_models(model_dir)
+    if kind.lower() == "auto":
+        if not rf_files and not nn_files:
+            raise FileNotFoundError(f"No model files found in {model_dir} (.joblib or .keras)")
+        # Prefer newer family; if only one exists, use it.
+        chosen = "nn" if (nn_files and (lnn >= lrf or not rf_files)) else "rf"
+    else:
+        chosen = kind.lower()
+        if chosen not in {"rf", "nn"}:
+            raise ValueError("kind must be one of {'auto','rf','nn'}")
 
-    pd.DataFrame({
-        'Parameter':param_names,
-        'RMSE':errors
-    }).to_csv(os.path.join(output_dir, "results/predictions_errors.csv"), index=False)
+    logging.info(
+        "[predict] kind=%s | rf=%d (latest=%s) nn=%d (latest=%s)",
+        chosen, len(rf_files), lrf, len(nn_files), lnn,
+    )
 
-    end_time = time.time()
-    print(f"Predictions completed in {(end_time - start_time) / 60:.2f}")
+    # Optional hint env for downstream scripts (harmless if unused)
+    os.environ["MODEL_KIND"] = chosen
+
+    kw = dict(
+        fits_dir=fits_dir,
+        labels_dir=labels_dir,
+        model_dir=model_dir,
+        output_dir=output_dir,
+        config=config_path if "config" in (getattr(_rf, "run", None) or getattr(_nn, "run", None) or {}).__class__.__name__.lower() else config_path,
+        # Backends accept either config or config_path; they ignore unknown kwargs.
+        config_path=config_path,
+    )
+
+    try:
+        result = _predict_nn(**kw) if chosen == "nn" else _predict_rf(**kw)
+    except TypeError:
+        # Some backends may not accept all kwargs; retry with a reduced set
+        kw_fallback = dict(
+            fits_dir=fits_dir,
+            labels_dir=labels_dir,
+            model_dir=model_dir,
+            output_dir=output_dir,
+            config_path=config_path,
+        )
+        result = _predict_nn(**kw_fallback) if chosen == "nn" else _predict_rf(**kw_fallback)
+
+    if result is None:
+        result = {
+            "status": "ok",
+            "model_kind": chosen,
+            "n_rf": len(rf_files),
+            "n_nn": len(nn_files),
+            "model_dir": str(model_dir),
+        }
+    return result
 
 
 if __name__ == "__main__":
-    load_and_predict()
+    # Minimal CLI passthrough for quick checks
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Unified prediction dispatcher")
+    parser.add_argument("--kind", default="auto", choices=["auto", "rf", "nn"])
+    parser.add_argument("--fits_dir", default=None)
+    parser.add_argument("--labels_dir", default=None)
+    parser.add_argument("--model_dir", default=None)
+    parser.add_argument("--output_dir", default=None)
+    parser.add_argument("--config_path", default="config.yaml")
+    args = parser.parse_args()
+
+    out = predict(
+        kind=args.kind,
+        fits_dir=args.fits_dir,
+        labels_dir=args.labels_dir,
+        model_dir=args.model_dir,
+        output_dir=args.output_dir,
+        config_path=args.config_path,
+    )
+    print(out)
