@@ -9,7 +9,7 @@ from joblib import load
 from types import SimpleNamespace
 from sklearn.metrics import root_mean_squared_error
 from sklearn.model_selection import cross_val_predict
-from utils import setup_env, parse_arguments, read_text_file, load_config
+from utils import setup_env, parse_arguments, read_text_file, load_config, open_flux_labels
 
 
 def load_and_predict(args = None):
@@ -17,11 +17,7 @@ def load_and_predict(args = None):
     if args is None:
         args = parse_arguments()
     config = load_config(args.config)
-    # Support utils.setup_env accepting either a dict or a path
-    try:
-        setup_env(config)
-    except TypeError:
-        setup_env(args.config)
+    setup_env(config)
 
     # load spectra
     labels_dir = args.labels_dir or config['directories'].get('labels', 'data/label_dir/')
@@ -31,8 +27,8 @@ def load_and_predict(args = None):
     # Ensure output subfolders exist
     os.makedirs(os.path.join(output_dir, "results"), exist_ok=True)
     os.makedirs(os.path.join(output_dir, "residuals"), exist_ok=True)
-    flux = load(os.path.join(spec_dir, 'flux.joblib'))
-    labels = pd.read_csv(os.path.join(labels_dir, 'labels.csv'))
+    flux, labels, wave = open_flux_labels(spec_dir, labels_dir)
+
     # Robust [Fe/H] column lookup
     feh_col = None
     for c in labels.columns:

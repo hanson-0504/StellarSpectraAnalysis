@@ -3,16 +3,15 @@ import os
 import time
 import logging
 import numpy as np
-import pandas as pd
 from tqdm import tqdm
-from joblib import dump, load
+from joblib import dump
 from types import SimpleNamespace
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.decomposition import PCA, IncrementalPCA
 from sklearn.model_selection import train_test_split, GridSearchCV
-from utils import setup_env, parse_arguments, read_text_file, load_config
+from utils import setup_env, parse_arguments, read_text_file, load_config, open_flux_labels
 
 
 def tune_hyperparam(X, y, pipeline, param_grid):
@@ -90,11 +89,10 @@ def train_and_save_models(args = None):
 
     # Load all the data
     spec_dir = args.fits_dir or config['directories'].get('spectral', 'data/spectral_dir')
-    flux = load(os.path.join(spec_dir, "flux.joblib"))
     labels_dir = args.labels_dir or config['directories'].get('labels', 'data/label_dir/')
     model_dir = config['directories'].get('models', 'data/model_dir/')
-    labels = pd.read_csv(os.path.join(labels_dir, "labels.csv"))
     param_names = read_text_file(os.path.join(labels_dir, 'label_names.txt'))
+    flux, labels, wave = open_flux_labels(spec_dir, labels_dir)
 
     # Decide training mode based on dataset size (or user override)
     n_samples = flux.shape[0]

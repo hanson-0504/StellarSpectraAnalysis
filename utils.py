@@ -2,6 +2,10 @@ import os
 import yaml
 import logging
 import argparse
+from pathlib import Path
+import zarr
+import pandas as pd
+import numpy as np
 
 
 def setup_env(config_source):
@@ -94,3 +98,27 @@ def read_text_file(filename):
     with open(filename, 'r') as f:
         lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
     return lines
+
+
+def open_flux_file(spec_dir):
+    z = zarr.open_group(Path(spec_dir) / "flux.zarr", mode='r')
+    X = np.array(z["flux"][:])
+    wave = np.array(z["wavelength"][:])
+    return X, wave
+
+def load_numeric_labels(labels_csv, cols):
+    """
+    load labels.csv and coerce specific columns to numeric.
+    Treats '--' as missing.
+    """
+    df = pd.read_csv(labels_csv, na_values=["--"], dtype=str)
+    missing = [c for c in cols if c not in df.columns]
+    if missing:
+        raise KeyError(f"Missing label columns in {labels_csv}: {missing}")
+
+    df_num = df.copy()
+    for c in cols:
+        df_num[c] = pd.to_numeric(df[c], errors="coerce")
+    
+    valid_mask = np.isfinite(df_num[cols].to_numpy(dtype="float64")).all(axis=1)
+    return df_num, valid_mask

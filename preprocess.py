@@ -12,7 +12,7 @@ from scipy import constants
 from astropy.io import fits
 from astropy import units as u
 from types import SimpleNamespace
-from astropy.table import Table, vstack
+from astropy.table import Table
 from scipy.ndimage import median_filter
 from astropy.coordinates import SkyCoord
 from utils import parse_arguments, load_config, setup_env, read_text_file
@@ -56,16 +56,19 @@ def interpolate_masked_values(spectrum, mask):
     return spectrum
 
 
-def combine_tables(table1, table2, parameters):
-    """Matches DESI spectra (table1) with APOGEE table (table2) by RA/Dec."""
+def combine_tables(table1, table2, parameters, seplimit=3 * u.arcsec):
+    """Matches DESI spectra (table1) with APOGEE table (table2) by RA/Dec.
+    Returns:
+        matched : astropy.Table  # rows from table1 matched to table2 with vhelio + requested params
+        matched_indices : np.ndarray  # indices into ORIGINAL table1 rows (for slicing flux/mask arrays)
+    """
     try:
         if len(table1) == 0 or len(table2) == 0:
             raise ValueError("One of the input tables is empty.")
 
+        # Column resolution (case-insensitive)
         t1 = {c.lower(): c for c in table1.colnames}
         t2 = {c.lower(): c for c in table2.colnames}
-
-        # Must exist in these specific tables:
         for need, colmap, name in [
             ('target_ra', t1, 'table1'),
             ('target_dec', t1, 'table1'),
@@ -76,45 +79,59 @@ def combine_tables(table1, table2, parameters):
             if need not in colmap:
                 raise KeyError(f"Missing required column '{need}' in {name}. Got: {list(colmap.values())}")
 
-        target_ra_col = t1['target_ra']; target_dec_col = t1['target_dec']
-        ra_col = t2['ra']; dec_col = t2['dec']; vhelio_col = t2['vhelio_avg']
+        ra1, dec1 = t1['target_ra'], t1['target_dec']
+        ra2, dec2, v2 = t2['ra'], t2['dec'], t2['vhelio_avg']
 
-        table1_clean = table1[np.isfinite(table1[target_ra_col]) & np.isfinite(table1[target_dec_col])]
-        table2_clean = table2[np.isfinite(table2[ra_col]) & np.isfinite(table2[dec_col])]
-        if len(table1_clean) == 0 or len(table2_clean) == 0:
+        # Clean both tables on finite RA/Dec; keep masks to map back to original indices
+        finite1 = np.isfinite(table1[ra1]) & np.isfinite(table1[dec1])
+        finite2 = np.isfinite(table2[ra2]) & np.isfinite(table2[dec2])
+
+        if not np.any(finite1) or not np.any(finite2):
             raise ValueError("No valid coordinates after cleaning.")
 
-        coords1 = SkyCoord(ra=table1_clean[target_ra_col], dec=table1_clean[target_dec_col], unit=(u.deg, u.deg))
-        coords2 = SkyCoord(ra=table2_clean[ra_col],       dec=table2_clean[dec_col],       unit=(u.deg, u.deg))
+        table1_clean = table1[finite1]
+        table2_clean = table2[finite2]
 
-        # idx1 -> table1_clean; idx2 -> table2_clean
-        idx1, idx2, sep2d, _ = coords1.search_around_sky(coords2, 3 * u.arcsec)
-        if len(idx1) == 0:
-            logging.warning("No matches found between tables.")
+        # Map from cleaned -> original row indices
+        orig_idx1 = np.nonzero(finite1)[0]
+        orig_idx2 = np.nonzero(finite2)[0]
+
+        # Sky coords
+        coords1 = SkyCoord(ra=table1_clean[ra1]*u.deg, dec=table1_clean[dec1]*u.deg)
+        coords2 = SkyCoord(ra=table2_clean[ra2]*u.deg, dec=table2_clean[dec2]*u.deg)
+
+        # Nearest neighbor from table1 -> table2, then filter by sep limit
+        idx2_nearest, sep2d, _ = coords1.match_to_catalog_sky(coords2)
+        keep = sep2d <= seplimit
+        if not np.any(keep):
+            logging.warning("No matches found within separation limit.")
             return Table(), np.array([])
 
-        # Ensure unique matches on table1 side (one APOGEE row per DESI row or vice versa;
-        # choose the direction that matches your use-case; here we keep unique table1 rows)
-        unique_on_t1 = np.unique(idx1, return_index=True)[1]
-        idx1 = idx1[unique_on_t1]
-        idx2 = idx2[unique_on_t1]
+        # If multiple table1 rows map to the same table2 row, keep first occurrence per table1 row (already unique).
+        idx1_clean = np.nonzero(keep)[0]          # indices into table1_clean
+        idx2_clean = idx2_nearest[keep]           # indices into table2_clean
+        idx1_orig  = orig_idx1[idx1_clean]        # indices into original table1
+        # idx2_orig = orig_idx2[idx2_clean]       # available if you ever need original table2 indices
 
-        matched = Table()
-        matched['ra']     = table1_clean[target_ra_col][idx1]
-        matched['dec']    = table1_clean[target_dec_col][idx1]
-        matched['vhelio'] = table2_clean[vhelio_col][idx2]
+        # Build matched table by slicing rows (safer than column-wise fancy indexing)
+        matched = table1_clean[idx1_clean]        # brings along target_ra/target_dec, etc.
+        matched.rename_column(ra1, 'ra')
+        matched.rename_column(dec1, 'dec')
 
-        # Copy requested parameters from table2
+        # Add vhelio and requested parameters from table2_clean
+        matched['vhelio'] = table2_clean[v2][idx2_clean]
+
         t2_cols = {c.lower(): c for c in table2_clean.colnames}
         for param in parameters:
             p = t2_cols.get(param.lower())
             if p is not None:
-                matched[param] = table2_clean[p][idx2]
+                matched[param] = table2_clean[p][idx2_clean]
             else:
-                logging.warning(f"Parameter '{param}' not found in table2.")
+                logging.warning(f"Parameter '{param}' not found in label table; skipping.")
 
-        logging.info(f"Matched {len(matched)} spectra.")
-        return matched, idx1  # indices into table1_clean (so you can subset arrays consistently)
+        logging.info(f"Matched {len(matched)} spectra within {seplimit}.")
+        return matched, idx1_orig  # return ORIGINAL table1 row indices for slicing flux/mask arrays
+
     except Exception as e:
         logging.error(f"Error in combine_tables(): {e}", exc_info=True)
         return Table(), np.array([])
@@ -152,7 +169,7 @@ def preprocess_spectra(args = None):
         else:   logging.warning(f"Column '{p}' not in APOGEE file; skipping.")
     apogee_table = Table(data=f[keep])
     del f
-    apogee_table.write("data/apogee_data.csv", format='ascii.csv', overwrite=True)
+    apogee_table.write("data/label_dir/apogee_data.csv", format='ascii.csv', overwrite=True)
 
     num_spec = 0
     for file in fits_files:
@@ -212,7 +229,7 @@ def preprocess_spectra(args = None):
         flux3 = np.asarray(flux['Z'], dtype=dtype)[matched_indices][:, 63:]
 
         wave_concat = np.concatenate([wave1, wave2, wave3])
-        logging.info(f"Number of modified spectra: {wave_concat.shape}")
+        logging.info(f"Number of modified pixels: {wave_concat.shape}")
 
         # Lazily create Zarr array now that we know pixel count
         if zarr_array is None:
@@ -221,22 +238,22 @@ def preprocess_spectra(args = None):
             if zarr_path.exists():
                 import shutil
                 shutil.rmtree(zarr_path)
-            z = zarr.open(zarr_path, mode="w")
-            zarr_array = z.create_dataset(
+            zgroup = zarr.open_group(zarr_path, mode="w")
+            zarr_array = zgroup.create_array(
                 "flux",
                 shape=(0, n_pix),
                 chunks=(batch_size, n_pix),
                 dtype=dtype,
-                compressor=None,
                 overwrite=True,
             )
-            # Persist the wavelength grid used for interpolation/normalization
-            z.create_dataset("wavelength", data=wave_concat.astype(dtype), overwrite=True)
-
+            zgroup.create_array("wavelength", data=wave_concat.astype(dtype), overwrite=True)
         # Process each matched spectrum
         for ispec in range(num_spec):
             if max_spec is not None and total_processed >= max_spec:
-                break
+                if buffer:
+                    zarr_array.append(np.stack(buffer, axis=0))
+                    buffer.clear()
+                break # break inner loop
 
             # Skip rows with NaNs in required labels to keep alignment exact
             row = {name: matched_tables[name][ispec] for name in matched_tables.colnames}
@@ -274,18 +291,14 @@ def preprocess_spectra(args = None):
                 zarr_array.append(np.stack(buffer, axis=0))
                 buffer.clear()
 
-    if max_spec is not None and total_processed >= max_spec:
-        # Flush any remaining buffered rows before breaking outer loop
-        if buffer:
-            zarr_array.append(np.stack(buffer, axis=0))
-            buffer.clear()
-        break
+        # If we hit max_spec inside the inner loop, break outer loop too
+        if max_spec is not None and total_processed >= max_spec:
+            break  # breaks out of fits_file loop
 
     # After processing all files, flush any remaining buffered rows
     if zarr_array is not None and buffer:
         zarr_array.append(np.stack(buffer, axis=0))
-        buffer.clear()        if max_spec is not None and total_processed >= max_spec:
-                break  # Stop processing more files
+        buffer.clear()
 
     # Build labels DataFrame from collected rows and save
     if labels_rows:

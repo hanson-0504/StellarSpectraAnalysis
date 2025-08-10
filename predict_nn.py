@@ -10,7 +10,7 @@ import tensorflow as tf
 from types import SimpleNamespace
 from tensorflow.keras.models import load_model
 from neural_network import predict_with_nn
-from utils import setup_env, parse_arguments, load_config, read_text_file
+from utils import setup_env, parse_arguments, load_config, read_text_file, open_flux_labels
 
 
 def load_and_predict(args = None):

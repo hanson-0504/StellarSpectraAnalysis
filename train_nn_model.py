@@ -1,14 +1,14 @@
+# train_nn_model.py
 import gc
 import os
 import time
 import logging
 import numpy as np
-import pandas as pd
 from tqdm import tqdm
-from joblib import load
+from pathlib import Path
 from types import SimpleNamespace
 from neural_network import train_neural_network
-from utils import parse_arguments, load_config, setup_env, read_text_file
+from utils import *
 
 
 def train_and_save_models(args=None):
@@ -20,33 +20,32 @@ def train_and_save_models(args=None):
 
     # Load all the data
     spec_dir = args.fits_dir or config['directories'].get('spectral', 'data/spectral_dir')
-    flux = load(os.path.join(spec_dir, "flux.joblib"))
     labels_dir = args.labels_dir or config['directories'].get('labels', 'data/label_dir/')
-    model_dir = config['directories'].get('models', 'data/model_dir/')
-    labels = pd.read_csv(os.path.join(labels_dir, "labels.csv"))
+    model_dir  = Path(config['directories'].get('models',  'data/model_dir/'))
+    model_dir.mkdir(parents=True, exist_ok=True)
     param_names = read_text_file(os.path.join(labels_dir, 'label_names.txt'))
+    flux, wave = open_flux_file(spec_dir)
+    labels_csv = Path(labels_dir) / "labels.csv"
 
     for param in tqdm(param_names, desc='Training Models'):
         # Skip if this parameter column is not present in labels
-        if param not in labels.columns:
-            logging.warning(f"Skipping {param}: column not found in labels.csv")
-            continue
         try:
             param_start = time.time()
-            y = labels[param].to_numpy()
-            X = flux
+            df_num, valid = load_numeric_labels(labels_csv, [param])
+            rows = np.flatnonzero(valid)
+            if rows.size == 0:
+                raise ValueError(f"No valid rows for target {param}")
+            y = df_num.loc[rows, param].to_numpy(dtype="float32")
+            X = flux[rows, :]
 
-            # Mask NaNs
-            mask = ~np.isnan(y)
-            y_masked, X_masked = y[mask], X[mask]
-            del X, y, mask # Free memory
-            gc.collect()
-
-            nn_model, nn_hps, val_rmse = train_neural_network(X_masked, y_masked, param)
+            nn_model, nn_hps, val_rmse = train_neural_network(X, y, param)
             nn_model.save(f"{model_dir}/{param}_model.keras")
             logging.info(f'\nSaved trained model for {param}')
             logging.info(f'Best hyperparameters for {param}: {nn_hps}')
-            logging.info(f'Validation RMSE for {param}: {val_rmse}')
+            logging.info(f'Validation RMSE for {param}: {val_rmse:.4f}')
+            
+            del X, y
+            gc.collect()
 
             param_end = time.time()
             logging.info(f'{param} processed in {(param_end - param_start) / 60:.2f} min')
