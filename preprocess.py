@@ -1,10 +1,13 @@
 import os
+import zarr
 import glob
 import time
 import logging
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
 from joblib import dump
+from pathlib import Path
 from scipy import constants
 from astropy.io import fits
 from astropy import units as u
@@ -137,7 +140,7 @@ def preprocess_spectra(args = None):
         return
     param_names = read_text_file(os.path.join(labels_dir, 'label_names.txt'))
 
-    with fits.open(label_files[0], memap=True) as hdus:
+    with fits.open(label_files[0], memmap=True) as hdus:
         f = Table.read(hdus[1])
     available_columns = {col.lower(): col for col in f.colnames}
     # Standardize parameter names (case-insensitive)
@@ -153,117 +156,148 @@ def preprocess_spectra(args = None):
 
     num_spec = 0
     for file in fits_files:
-        with fits.open(file) as hdu:
+        with fits.open(file, memmap=True) as hdu:
             num_spec += hdu['B_FLUX'].shape[0]
     logging.info(f"Number of spectra = {num_spec}")
 
     max_spec = getattr(args, "max_spec", None)
 
-    flux_list = []
+    # Streaming setup
+    batch_size = getattr(args, "batch_size", 256)
+    dtype = np.float32
+    zarr_path = Path(spec_dir) / "flux.zarr"
+    # We'll create the Zarr store lazily after we know the final wavelength grid length
+    zarr_array = None
+    buffer = []  # list of np.ndarray rows to append in chunks
+
+    labels_rows = []  # accumulate matched parameter rows aligned to written spectra
+
     table_list = []
-    total_processed = 0  # <-- Add this line
+    total_processed = 0
 
     for fits_file in tqdm(fits_files, desc="Processing FITS files"):
-        wave = dict()
-        flux = dict()
-        mask = dict()
+        wave = {}
+        flux = {}
+        mask = {}
 
-        with fits.open(fits_file) as hdus:
+        # Open with memory mapping to avoid loading full arrays
+        with fits.open(fits_file, memmap=True) as hdus:
             spec_data = Table(hdus['FIBERMAP'].data)
             for camera in ['B', 'R', 'Z']:
                 wave[camera] = hdus[f'{camera}_WAVELENGTH'].data
                 mask[camera] = hdus[f'{camera}_MASK'].data
                 flux[camera] = hdus[f'{camera}_FLUX'].data
+
         matched_tables, matched_indices = combine_tables(spec_data, apogee_table, param_names)
         num_spec = len(matched_tables)
-        if len(matched_tables) == 0:
-            logging.error("No spectra matched. Check coordinate ranges and units.")
-            return  # Exit gracefully instead of crashing
+        if num_spec == 0:
+            logging.warning("No spectra matched in this file; skipping.")
+            continue
         table_list.append(matched_tables)
-        
+
         logging.info(f"Number of unmodified pixels: {len(wave['B'])} in camera B, {len(wave['R'])} in camera R, {len(wave['Z'])} in camera Z")
         logging.info(f"Total: {len(wave['B']) + len(wave['R']) + len(wave['Z'])}")
 
-        # Eliminate the last 25 wavelengths from camera B
-        wave1 = np.array(wave['B'])
-        mask1 = (np.array(mask['B'])[matched_indices] != 0)
-        flux1 = np.array(flux['B'])[matched_indices]
+        # Apply camera-specific wavelength trimming (vectorized)
+        wave1 = np.asarray(wave['B'], dtype=dtype)[:-25]
+        mask1 = (np.asarray(mask['B'], dtype=bool)[matched_indices])[:, :-25]
+        flux1 = np.asarray(flux['B'], dtype=dtype)[matched_indices][:, :-25]
 
-        wave1 = wave1[:-25]
-        mask1 = mask1[:, :-25]
-        flux1 = flux1[:, :-25]
+        wave2 = np.asarray(wave['R'], dtype=dtype)[26: -63]
+        mask2 = (np.asarray(mask['R'], dtype=bool)[matched_indices])[:, 26: -63]
+        flux2 = np.asarray(flux['R'], dtype=dtype)[matched_indices][:, 26: -63]
 
-        # Eliminate the first 26 wavelengths from camera R
-        # Eliminate the last 63 wavelengths from camera R
-        wave2 = np.array(wave['R'])
-        wave2 = wave2[26:]
-        wave2 = wave2[:-63]
+        wave3 = np.asarray(wave['Z'], dtype=dtype)[63:]
+        mask3 = (np.asarray(mask['Z'], dtype=bool)[matched_indices])[:, 63:]
+        flux3 = np.asarray(flux['Z'], dtype=dtype)[matched_indices][:, 63:]
 
-        mask2 = (np.array(mask['R'])[matched_indices] != 0)
-        mask2 = mask2[:, 26:]
-        mask2 = mask2[:, :-63]
+        wave_concat = np.concatenate([wave1, wave2, wave3])
+        logging.info(f"Number of modified spectra: {wave_concat.shape}")
 
-        flux2 = np.array(flux['R'])[matched_indices]
-        flux2 = flux2[:, 26:]
-        flux2 = flux2[:, :-63]
+        # Lazily create Zarr array now that we know pixel count
+        if zarr_array is None:
+            n_pix = int(wave_concat.shape[0])
+            # Fresh store each run
+            if zarr_path.exists():
+                import shutil
+                shutil.rmtree(zarr_path)
+            z = zarr.open(zarr_path, mode="w")
+            zarr_array = z.create_dataset(
+                "flux",
+                shape=(0, n_pix),
+                chunks=(batch_size, n_pix),
+                dtype=dtype,
+                compressor=None,
+                overwrite=True,
+            )
+            # Persist the wavelength grid used for interpolation/normalization
+            z.create_dataset("wavelength", data=wave_concat.astype(dtype), overwrite=True)
 
-        # Eliminate the first 63 wavelengths from camera Z
-        wave3 = np.array(wave['Z'])
-        wave3 = wave3[63:]
-        mask3 = (np.array(mask['Z'])[matched_indices] != 0)
-        mask3 = mask3[:, 63:]
-        flux3 = np.array(flux['Z'])[matched_indices]
-        flux3 = flux3[:, 63:]
-
-        wave = np.concatenate([wave1, wave2, wave3])
-        
-        logging.info(f"Number of modified spectra: {wave.shape}")
-
+        # Process each matched spectrum
         for ispec in range(num_spec):
             if max_spec is not None and total_processed >= max_spec:
-                break  # Stop processing more spectra
+                break
 
-            spec_v = matched_tables['vhelio'][ispec] # in km/s
+            # Skip rows with NaNs in required labels to keep alignment exact
+            row = {name: matched_tables[name][ispec] for name in matched_tables.colnames}
+            # Identify label columns requested: vhelio plus the params in param_names
+            label_values = [row.get('vhelio')] + [row.get(p) for p in param_names]
+            if any([x is None or (hasattr(x, 'astype') and not np.isfinite(np.asarray(x).astype(float))) for x in label_values]):
+                continue
 
-            flux = np.concatenate([flux1[ispec], flux2[ispec], flux3[ispec]])
-            mask = np.concatenate([mask1[ispec], mask2[ispec], mask3[ispec]])
+            spec_v = float(matched_tables['vhelio'][ispec])  # km/s
 
-            flux = np.ma.MaskedArray(data=flux, mask=mask)
-            flux = interpolate_masked_values(flux, mask)
+            flux_concat = np.concatenate([
+                flux1[ispec], flux2[ispec], flux3[ispec]
+            ]).astype(dtype, copy=False)
+            mask_concat = np.concatenate([
+                mask1[ispec], mask2[ispec], mask3[ispec]
+            ])
 
-            # normalize flux
-            window_size = 151
-            moving_median = median_filter(flux, size=window_size)
+            # Interpolate masked values (works on plain ndarray)
+            flux_filled = interpolate_masked_values(flux_concat, mask_concat)
+
+            # Normalize via moving median; guard against zeros
+            moving_median = median_filter(flux_filled, size=151)
             moving_median[moving_median == 0] = 1e-10
-            normal_flux = flux / moving_median
-            #normal_flux = normal_flux
+            normal_flux = (flux_filled / moving_median).astype(dtype, copy=False)
 
-            flux_rest = doppler_shift(wave, normal_flux, spec_v, wave)
-            # append data arrays
-            flux_list.append(flux_rest)
-            total_processed += 1  # <-- Add this line
+            # Doppler shift to rest frame on the same grid
+            flux_rest = doppler_shift(wave_concat, normal_flux, spec_v, wave_concat).astype(dtype, copy=False)
 
-        if max_spec is not None and total_processed >= max_spec:
-            break  # Stop processing more files
+            buffer.append(flux_rest)
+            labels_rows.append({p: row.get(p) for p in ['ra','dec','vhelio'] + param_names})
+            total_processed += 1
 
-    matched_tables = vstack(table_list)
-    labels_df = matched_tables.to_pandas()
+            # Flush buffer to Zarr when we hit batch_size
+            if len(buffer) >= batch_size:
+                zarr_array.append(np.stack(buffer, axis=0))
+                buffer.clear()
 
-    # Remove all rows with any NaNs
-    labels_df_clean = labels_df.dropna().reset_index(drop=True)
-    #logging.info(f"There are {labels_df_clean.isnull().sum()} NaNs in the labels DataFrame after cleaning.")
+    if max_spec is not None and total_processed >= max_spec:
+        # Flush any remaining buffered rows before breaking outer loop
+        if buffer:
+            zarr_array.append(np.stack(buffer, axis=0))
+            buffer.clear()
+        break
 
-    if flux_list:
-        flux_array = np.vstack(flux_list)
-        # Now use the cleaned, reset index
-        flux_array_clean = flux_array[:len(labels_df_clean)]
-        dump(flux_array_clean, os.path.join(spec_dir, "flux.joblib"))
-        labels_df_clean.to_csv(os.path.join(labels_dir, 'labels.csv'), index=False)
+    # After processing all files, flush any remaining buffered rows
+    if zarr_array is not None and buffer:
+        zarr_array.append(np.stack(buffer, axis=0))
+        buffer.clear()        if max_spec is not None and total_processed >= max_spec:
+                break  # Stop processing more files
+
+    # Build labels DataFrame from collected rows and save
+    if labels_rows:
+        labels_df = pd.DataFrame.from_records(labels_rows)
+        labels_df.to_csv(os.path.join(labels_dir, 'labels.csv'), index=False)
+        logging.info(f"Wrote labels.csv with {len(labels_df)} rows aligned to flux.zarr")
     else:
-        labels_df_clean.to_csv(os.path.join(labels_dir, 'labels.csv'), index=False)
+        logging.warning("No labels to write; labels_rows is empty.")
 
     end_time = time.time()
-    logging.info(f"Preprocessing is complete in {(end_time-start_time)/60:.2f}")
+    logging.info(f"Preprocessing is complete in {(end_time-start_time)/60:.2f} minutes. Total spectra written: {total_processed}")
+
 
 def run(fits_dir=None, labels_dir=None, config_path="config.yaml", max_spec=None):
     """Programmatic entry point used by agents/tools.py.
@@ -272,6 +306,7 @@ def run(fits_dir=None, labels_dir=None, config_path="config.yaml", max_spec=None
     --------
     >>> import preprocess as pp
     >>> pp.run(fits_dir="data/spectral_dir", labels_dir="data/label_dir", max_spec=500)
+    # Outputs: <spec_dir>/flux.zarr (chunked float32) and <labels_dir>/labels.csv
     """
     args = SimpleNamespace(
         fits_dir=fits_dir,

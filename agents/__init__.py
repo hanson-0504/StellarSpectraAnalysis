@@ -2,7 +2,7 @@
 Agent package for automating the spectral analysis pipeline.
 
 Public API:
-- preprocess_spectra(), train_models(), predict_new(), evaluate_results()
+- preprocess_spectra(), train_models(), predict(), evaluate_results()
 - modules: tools, state, rule_agent, llm_agent
 """
 
