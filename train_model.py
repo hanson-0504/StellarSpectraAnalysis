@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 import train_rf_model as rf
-import train_nn_model as nn
+import train_nn_model_v1 as nn
 
 def train_rf(**kw):
     if hasattr(rf, 'run'):  return rf.run(**kw)

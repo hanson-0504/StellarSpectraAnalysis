@@ -1,4 +1,4 @@
-# train_nn_model.py
+# train_nn_model_v1.py
 import gc
 import os
 import time
@@ -28,14 +28,13 @@ def train_and_save_models(args=None):
     labels_csv = Path(labels_dir) / "labels.csv"
 
     for param in tqdm(param_names, desc='Training Models'):
-        # Skip if this parameter column is not present in labels
         try:
             param_start = time.time()
             df_num, valid = load_numeric_labels(labels_csv, [param])
             rows = np.flatnonzero(valid)
             if rows.size == 0:
                 raise ValueError(f"No valid rows for target {param}")
-            y = df_num.loc[rows, param].to_numpy(dtype="float32")
+            y = df_num.loc[rows, param].to_numpy(dtype='float32')
             X = flux[rows, :]
 
             nn_model, nn_hps, val_rmse = train_neural_network(X, y, param)
@@ -68,4 +67,4 @@ if __name__ == "__main__":
     try:
         train_and_save_models()
     except Exception as e:
-        logging.error(f"An error occurred during prediction: {e}")
+        logging.error(f"An error occurred during training: {e}")
