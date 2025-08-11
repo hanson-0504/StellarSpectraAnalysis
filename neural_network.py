@@ -1,6 +1,6 @@
 import tensorflow as tf
 import keras_tuner as kt
-from tensorflow import keras
+import tensorflow.keras as keras
 import numpy as np
 
 

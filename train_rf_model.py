@@ -1,3 +1,4 @@
+# train_rf_model.py
 import gc
 import os
 import time
@@ -11,7 +12,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.decomposition import PCA, IncrementalPCA
 from sklearn.model_selection import train_test_split, GridSearchCV
-from utils import setup_env, parse_arguments, read_text_file, load_config, open_flux_labels
+from utils import *
 
 
 def tune_hyperparam(X, y, pipeline, param_grid):
@@ -92,7 +93,8 @@ def train_and_save_models(args = None):
     labels_dir = args.labels_dir or config['directories'].get('labels', 'data/label_dir/')
     model_dir = config['directories'].get('models', 'data/model_dir/')
     param_names = read_text_file(os.path.join(labels_dir, 'label_names.txt'))
-    flux, labels, wave = open_flux_labels(spec_dir, labels_dir)
+    flux, wave = open_flux_file(spec_dir)
+    labels_csv = Path(labels_dir) / "labels.csv"
 
     # Decide training mode based on dataset size (or user override)
     n_samples = flux.shape[0]
@@ -109,32 +111,30 @@ def train_and_save_models(args = None):
 
     for param in tqdm(param_names, desc='Training Models'):
         # Skip if this parameter column is not present in labels
-        if param not in labels.columns:
-            logging.warning(f"Skipping {param}: column not found in labels.csv")
-            continue
         try:
             param_start = time.time()
-            y = labels[param].to_numpy()
-            X = flux
-
-            # Mask NaNs
-            mask = ~np.isnan(y)
-            y_masked, X_masked = y[mask], X[mask]
-            del X, y, mask # Free memory
-            gc.collect()
+            df_num, valid = load_numeric_labels(labels_csv, [param])
+            rows = np.flatnonzero(valid)
+            if rows.size == 0:
+                raise ValueError(f"No valid rows for target {param}")
+            y = df_num.loc[rows, param].to_numpy(dtype="float32")
+            X = flux[rows, :]
 
             # Select data for hyperparameter tuning
             if mode == 'large':
                 # Subsample for speed on big datasets
                 tune_size = min(max(1000, int(0.1 * n_samples)), 5000)
                 X_small, _, y_small, _ = train_test_split(
-                    X_masked, y_masked, train_size=min(0.8, tune_size / max(1, len(y_masked))), random_state=42
+                    X, y, train_size=min(0.8, tune_size / max(1, len(y))), random_state=42
                 )
             else:  # small
                 # Use most of the data for tuning; GridSearchCV will CV-split internally
                 X_small, _, y_small, _ = train_test_split(
-                    X_masked, y_masked, train_size=0.8, random_state=42
+                    X, y, train_size=0.8, random_state=42
                 )
+
+            del X, y  # Free memory after split
+            gc.collect()
 
             # Hyperparameter Tuning
             best_pipeline = tune_hyperparam(X_small, y_small, pipeline, param_grid)
