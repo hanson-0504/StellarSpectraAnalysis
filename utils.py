@@ -101,10 +101,49 @@ def read_text_file(filename):
 
 
 def open_flux_file(spec_dir):
-    z = zarr.open_group(Path(spec_dir) / "flux.zarr", mode='r')
-    X = np.array(z["flux"][:])
-    wave = np.array(z["wavelength"][:])
-    return X, wave
+    """Open preprocessed flux data from ``spec_dir``.
+
+    This helper previously assumed that the spectra were stored in a
+    ``flux.zarr`` group.  Some workflows—including the unit tests—store the
+    flux matrix in a plain ``flux.joblib`` file instead.  Attempting to open
+    a non-existent Zarr group raised ``GroupNotFoundError`` and caused the
+    training pipeline to crash.
+
+    To make the function more robust we now check for both storage formats:
+
+    - ``flux.zarr``: opened via :mod:`zarr` (with accompanying wavelength
+      array).
+    - ``flux.joblib``: loaded via :mod:`joblib`; wavelength information is
+      unavailable so ``None`` is returned for the wavelength grid.
+
+    Args:
+        spec_dir (str | Path): Directory containing the flux data.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray | None]: Flux matrix and optional
+        wavelength grid.
+    """
+
+    spec_dir = Path(spec_dir)
+    zarr_path = spec_dir / "flux.zarr"
+    joblib_path = spec_dir / "flux.joblib"
+
+    if zarr_path.exists():
+        z = zarr.open_group(zarr_path, mode="r")
+        X = np.array(z["flux"][:])
+        wave = np.array(z["wavelength"][:])
+        return X, wave
+
+    if joblib_path.exists():
+        from joblib import load
+
+        X = np.array(load(joblib_path))
+        # No wavelength information stored in the joblib file
+        return X, None
+
+    raise FileNotFoundError(
+        f"Neither 'flux.zarr' nor 'flux.joblib' found in {spec_dir}"
+    )
 
 def load_numeric_labels(labels_csv, cols):
     """

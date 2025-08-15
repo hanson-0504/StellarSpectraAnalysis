@@ -169,7 +169,13 @@ def preprocess_spectra(args = None):
         else:   logging.warning(f"Column '{p}' not in APOGEE file; skipping.")
     apogee_table = Table(data=f[keep])
     del f
-    apogee_table.write("data/label_dir/apogee_data.csv", format='ascii.csv', overwrite=True)
+    # Persist a copy of the APOGEE subset in the configured labels directory.
+    # The previous implementation wrote to a hard-coded ``data/label_dir``
+    # path which failed when a different directory was provided via the
+    # configuration or command-line arguments.  Use ``labels_dir`` so the
+    # output respects the user's environment.
+    apogee_path = Path(labels_dir) / "apogee_data.csv"
+    apogee_table.write(apogee_path, format='ascii.csv', overwrite=True)
 
     num_spec = 0
     for file in fits_files:
@@ -299,6 +305,19 @@ def preprocess_spectra(args = None):
     if zarr_array is not None and buffer:
         zarr_array.append(np.stack(buffer, axis=0))
         buffer.clear()
+
+    # For compatibility with downstream tools expecting a joblib file,
+    # serialize the full flux matrix from the Zarr store.  This is mainly used
+    # in the lightweight unit tests where the dataset comfortably fits in
+    # memory.  For very large datasets users can rely solely on ``flux.zarr``.
+    if zarr_array is not None:
+        try:
+            from joblib import dump
+
+            flux_joblib = np.asarray(zarr_array[:])
+            dump(flux_joblib, Path(spec_dir) / "flux.joblib")
+        except Exception as e:
+            logging.warning(f"Could not write flux.joblib: {e}")
 
     # Build labels DataFrame from collected rows and save
     if labels_rows:
