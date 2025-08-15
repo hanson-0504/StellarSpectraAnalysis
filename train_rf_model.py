@@ -26,8 +26,8 @@ def tune_hyperparam(X, y, pipeline, param_grid):
         param_grid (dict): Hyperparameter grid for tuning
 
     Returns:
-        Pipline: Best pipeline for parameters for {name} target
-        best parameters: Print out the best parameters for {name} target
+        Pipeline: Best pipeline for {name} target. Callers can inspect
+            `best_estimator_.get_params()` for parameter values.
     """
     try:
         grid_search = GridSearchCV(
