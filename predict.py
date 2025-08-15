@@ -25,7 +25,7 @@ except Exception:  # noqa: BLE001
     _rf = None  # type: ignore
 
 try:
-    import predict_nn as _nn
+    import predict_nn_v1 as _nn
 except Exception:  # noqa: BLE001
     _nn = None  # type: ignore
 

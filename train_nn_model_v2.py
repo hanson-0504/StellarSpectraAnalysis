@@ -32,6 +32,9 @@ def train_and_save_models(args=None):
 
     # Load flux and labels
     flux, wave = open_flux_file(spec_dir)
+    del wave
+    gc.collect()
+
     labels_csv = Path(labels_dir) / 'labels.csv'
 
     for param in tqdm(param_names, desc='Training Models'):

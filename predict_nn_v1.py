@@ -10,7 +10,7 @@ import tensorflow as tf
 from types import SimpleNamespace
 from tensorflow.keras.models import load_model
 from neural_network import predict_with_nn
-from utils import setup_env, parse_arguments, load_config, read_text_file, open_flux_labels
+from utils import *
 
 
 def load_and_predict(args = None):
@@ -22,34 +22,19 @@ def load_and_predict(args = None):
 
     # Load all the data
     spec_dir = args.fits_dir or config['directories'].get('spectral', 'data/spectral_dir')
-    flux = load(os.path.join(spec_dir, "flux.joblib"))
     labels_dir = args.labels_dir or config['directories'].get('labels', 'data/label_dir/')
     model_dir = config['directories'].get('models', 'data/model_dir/')
     output_dir = config['directories'].get('output', 'output/')
     os.makedirs(os.path.join(output_dir, "results"), exist_ok=True)
     os.makedirs(os.path.join(output_dir, "residuals"), exist_ok=True)
 
-    labels = pd.read_csv(os.path.join(labels_dir, "labels.csv"))
+    flux, wave = open_flux_file(spec_dir)
     param_names = read_text_file(os.path.join(labels_dir, 'label_names.txt'))
-
-    # Robust [Fe/H] column lookup
-    feh_col = None
-    for c in labels.columns:
-        cl = c.lower()
-        if cl in ("fe_h", "[fe/h]", "feh", "feh_true", "fe_h_true"):
-            feh_col = c
-            break
-    if feh_col is None:
-        raise KeyError("Could not find a [Fe/H] column in labels.csv. Tried fe_h, [Fe/H], feh, feh_true, fe_h_true.")
-    feh = labels[feh_col].to_numpy()
+    labels_csv = Path(labels_dir) / "labels.csv"
 
     errors = []
 
     for param in tqdm(param_names, desc='Predicting'):
-        # Skip if this parameter column is not present in labels
-        if param not in labels.columns:
-            logging.warning(f"Skipping {param}: column not found in labels.csv")
-            continue
         try:
             param_start = time.time()
 
@@ -59,12 +44,15 @@ def load_and_predict(args = None):
                 logging.warning(f"Model file for {param} not found. Skipping...")
                 continue
             model = load_model(model_path)
-            y = labels[param].to_numpy()
-            X = flux
+
+            df__num, valid = load_numeric_labels(labels_csv, [param])
+            rows = np.flatnonzero(valid)
+            if rows.size == 0:
+                raise ValueError(f"No valid rows for target {param}")
+            y = df__num.loc[rows, param].to_numpy(dtype='float32')
+            X = flux[rows, :]
             
-            # Make Mask
-            mask = ~np.isnan(y) & ~np.isnan(feh)
-            feh_masked, y_masked, X_masked = feh[mask], y[mask], X[mask]
+            
             del mask, X, y
             gc.collect()
 

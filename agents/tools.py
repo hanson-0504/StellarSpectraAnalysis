@@ -98,7 +98,7 @@ def train_models(strategy: str = "auto", large_threshold: int = 5000) -> dict:
         return {"status": "ok", "model": "rf"}
     else:
         try:
-            import train_nn_model as tnn
+            import train_nn_model_v1 as tnn
         except ImportError:
             logging.error("train_nn_model.py not found; falling back to RandomForest training.")
             try:
